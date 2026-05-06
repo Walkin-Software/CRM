@@ -83,6 +83,7 @@ class LeadCreate(BaseModel):
     phone: str
     email: Optional[EmailStr] = None
     interest: Optional[str] = None
+    description: Optional[str] = None
     lead_type: Optional[str] = "form"
     job_role: Optional[str] = None
     years_experience: Optional[float] = None
@@ -109,6 +110,7 @@ class LeadUpdate(BaseModel):
     phone: Optional[str] = None
     email: Optional[EmailStr] = None
     interest: Optional[str] = None
+    description: Optional[str] = None
     lead_type: Optional[str] = None
     job_role: Optional[str] = None
     years_experience: Optional[float] = None
@@ -124,6 +126,7 @@ class LeadOut(BaseModel):
     phone: str
     email: Optional[str]
     interest: Optional[str]
+    description: Optional[str]
     lead_type: str
     job_role: Optional[str]
     years_experience: Optional[float]

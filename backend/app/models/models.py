@@ -73,6 +73,7 @@ class Lead(Base):
     phone: Mapped[str] = mapped_column(String(20), nullable=False)
     email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     interest: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     lead_type: Mapped[str] = mapped_column(String(20), default="form")
     job_role: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     years_experience: Mapped[Optional[float]] = mapped_column(Float, nullable=True)

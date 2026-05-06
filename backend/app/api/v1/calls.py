@@ -28,7 +28,7 @@ from app.core.security import get_current_user
 from app.core.config import settings
 from app.models.models import Call, User, Lead, Conversation, ConversationMessage
 from app.schemas.schemas import PaginatedResponse, CallOut, OutboundCallRequest
-from app.services.ai_content import generate_sales_call_turn, generate_screening_questions
+from app.services.ai_content import generate_sales_call_turn, generate_sales_cross_questions, generate_dynamic_next_question
 
 router = APIRouter()
 
@@ -36,6 +36,9 @@ HANGUP_THRESHOLD_SECONDS = 5
 COMPANY_NAME = "Walkin Software"
 AI_CALLER_NAME = "Siri"
 MAX_NO_INPUT_RETRIES = 2
+MAX_CLARIFICATION_RETRIES_PER_QUESTION = 2
+MAX_TOTAL_CLARIFICATION_RETRIES = 4
+MAX_CROSS_QUESTIONS_PER_ANSWER = 0
 
 
 def _normalize_call_status(provider_status: str | None, duration_seconds: int | None = None) -> str:
@@ -229,31 +232,20 @@ def _lead_interest_label(lead: Lead) -> str:
 
 async def _build_sales_call_questions(lead: Lead) -> list[str]:
     interest_label = _lead_interest_label(lead)
-    generated = await generate_screening_questions(
-        full_name=lead.full_name,
-        email=lead.email,
-        phone=lead.phone,
-        job_role=lead.job_role,
-        years_experience=lead.years_experience,
-        interest=lead.interest,
-    )
 
     if "demo" in interest_label.lower():
         first_question = "Are you interested in proceeding so we can book a demo for you?"
     else:
         first_question = "Are you interested in proceeding with this opportunity?"
 
-    questions = [first_question]
-
-    if "demo" in interest_label.lower():
-        questions.append("Great. What date and time would be convenient for your demo discussion?")
-    else:
-        questions.append(generated[0] if generated else f"Could you briefly share your relevant experience for {interest_label}?")
-
-    if len(generated) > 1:
-        questions.append(generated[1])
-    else:
-        questions.append("What is the best day and time for our team to contact you again?")
+    # Keep only the opening question static.
+    # Remaining turns are AI-generated from interest + description + responses.
+    questions = [
+        first_question,
+        "What would you like to know first about this opportunity?",
+        "What date and time would be convenient for a short discussion with our team?",
+        "What specific outcome are you expecting from this discussion?",
+    ]
 
     return [question.strip() for question in questions[:3] if question and question.strip()]
 
@@ -268,13 +260,13 @@ def _fallback_sales_questions(interest_label: str) -> list[str]:
     if "demo" in interest_label.lower():
         return [
             "Are you interested in proceeding so we can book a demo for you?",
-            "Great. What date and time would be convenient for your demo discussion?",
-            "Before we schedule it, could you briefly share your current experience?",
+            "What would you like to know first about this opportunity?",
+            "What date and time would be convenient for a short discussion with our team?",
         ]
     return [
         "Are you interested in proceeding with this opportunity?",
-        "Could you briefly share your relevant experience for this role?",
-        "What is the best day and time for our team to contact you again?",
+        "What would you like to know first about this opportunity?",
+        "What date and time would be convenient for a short discussion with our team?",
     ]
 
 
@@ -286,8 +278,70 @@ def _sales_closing_prompt() -> str:
     return f"Thank you for your time today. Our team at {COMPANY_NAME} will review your responses and contact you shortly. Have a great day."
 
 
+def _sales_clarification_limit_prompt() -> str:
+    return (
+        f"Thank you for your questions. Our {COMPANY_NAME} team will get back to you with full details "
+        "about the demo, course, and pricing. Have a great day."
+    )
+
+
+def _active_sales_question(state: dict, questions: list[str], current_index: int) -> str:
+    pending_cross_questions = list(state.get("pending_cross_questions") or [])
+    if pending_cross_questions:
+        return pending_cross_questions[0]
+    if not questions:
+        return "Could you please continue?"
+    return questions[max(0, min(current_index, len(questions) - 1))]
+
+
+def _ensure_not_repeated_question(candidate: str, prior_questions: list[str], fallback: str) -> str:
+    normalized = (candidate or "").strip().lower().rstrip("?.!")
+    seen = {(q or "").strip().lower().rstrip("?.!") for q in prior_questions}
+    if normalized and normalized not in seen:
+        return candidate
+    return fallback
+
+
+async def _resolve_next_main_question(
+    *,
+    lead: Optional[Lead],
+    state: dict,
+    questions: list[str],
+    next_index: int,
+    latest_candidate_response: str,
+    answers: list[str],
+) -> str:
+    fallback_question = questions[next_index] if 0 <= next_index < len(questions) else "What date and time would be convenient for your demo discussion?"
+    if next_index <= 0:
+        return fallback_question
+
+    asked_questions = list(state.get("asked_questions") or [])
+    if not settings.MOCK_SERVICES and settings.OPENAI_API_KEY:
+        generated = await generate_dynamic_next_question(
+            company_name=COMPANY_NAME,
+            caller_name=AI_CALLER_NAME,
+            interest=lead.interest if lead else None,
+            job_role=lead.job_role if lead else None,
+            lead_description=lead.description if lead else None,
+            latest_candidate_response=latest_candidate_response,
+            prior_answers=answers,
+            prior_questions=asked_questions,
+        )
+        return _ensure_not_repeated_question(generated, asked_questions, fallback_question)
+    return fallback_question
+
+
 def _sales_candidate_concern_reply(candidate_text: str) -> str | None:
     text = (candidate_text or "").lower()
+    if any(phrase in text for phrase in ["what is demo", "demo for", "why demo", "demo required", "demo mean", "about the demo session"]):
+        return (
+            "Great question. This demo is a guided walkthrough where we show the course structure, projects, tools, "
+            "learning path, and outcomes so you can decide confidently."
+        )
+    if any(word in text for word in ["demo", "course", "details", "detail", "information", "info", "fees", "fee", "cost", "price", "duration", "syllabus", "curriculum"]):
+        return (
+            "Happy to explain. In the demo we cover curriculum, class format, projects, timeline, and pricing clearly."
+        )
     if any(word in text for word in ["salary", "package", "ctc", "pay"]):
         return "Thank you for asking. Compensation details are shared by our recruitment team after the next screening step."
     if any(word in text for word in ["location", "remote", "hybrid", "onsite"]):
@@ -297,6 +351,109 @@ def _sales_candidate_concern_reply(candidate_text: str) -> str | None:
     if any(word in text for word in ["when", "process", "next", "timeline"]):
         return "Our recruitment team will contact you with the next steps soon after this call."
     return None
+
+
+def _is_candidate_clarification_request(candidate_text: str) -> bool:
+    text = (candidate_text or "").strip().lower()
+    if not text:
+        return False
+    if "?" in text:
+        return True
+    clarification_markers = [
+        "know more",
+        "tell me more",
+        "more info",
+        "more information",
+        "could you explain",
+        "can you explain",
+        "what is",
+        "how much",
+        "fees",
+        "fee",
+        "cost",
+        "price",
+        "course",
+        "demo",
+        "duration",
+        "syllabus",
+        "curriculum",
+        "batch",
+        "timing",
+    ]
+    return any(marker in text for marker in clarification_markers)
+
+
+def _is_affirmative_interest(candidate_text: str) -> bool:
+    text = (candidate_text or "").strip().lower()
+    if not text:
+        return False
+    affirmative_markers = [
+        "yes",
+        "yeah",
+        "yep",
+        "interested",
+        "i am interested",
+        "book it",
+        "book demo",
+        "please book",
+        "sure",
+        "okay",
+        "ok",
+    ]
+    return any(marker in text for marker in affirmative_markers)
+
+
+def _is_skip_request(candidate_text: str) -> bool:
+    text = (candidate_text or "").strip().lower()
+    if not text:
+        return False
+    markers = [
+        "skip",
+        "skip this",
+        "skip question",
+        "next question",
+        "move on",
+        "pass",
+    ]
+    return any(marker in text for marker in markers)
+
+
+def _is_repeat_request(candidate_text: str) -> bool:
+    text = (candidate_text or "").strip().lower()
+    if not text:
+        return False
+    markers = [
+        "repeat",
+        "say again",
+        "come again",
+        "pardon",
+        "didn't catch",
+        "what was the question",
+        "which question",
+    ]
+    return any(marker in text for marker in markers)
+
+
+def _should_generate_cross_questions(asked_question: str, candidate_response: str) -> bool:
+    question = (asked_question or "").strip().lower()
+    response = (candidate_response or "").strip().lower()
+    if not response:
+        return False
+
+    # Skip cross-questions for scheduling-style prompts.
+    if any(token in question for token in ["date", "time", "slot", "schedule", "convenient"]):
+        return False
+
+    # Skip for very short acknowledgements.
+    if response in {"yes", "yes please", "okay", "ok", "sure", "fine", "no", "nope"}:
+        return False
+
+    # Skip when candidate explicitly asks to skip/repeat.
+    if _is_skip_request(response) or _is_repeat_request(response):
+        return False
+
+    # Generate only when the response has some useful content.
+    return len(response.split()) >= 5
 
 
 def _sales_no_input_prompt(question: str, retry_count: int) -> str:
@@ -1015,6 +1172,7 @@ async def outbound_call(
             "sales_call_state": {
                 "questions": sales_questions,
                 "answers": [],
+                "asked_questions": [sales_questions[0]] if sales_questions else [],
                 "current_question_index": 0,
                 "no_input_retries": 0,
                 "completed": False,
@@ -1079,14 +1237,23 @@ async def twilio_conversation_webhook(
 
         state = _sales_call_state(call)
         questions = list(state.get("questions") or [])
+        asked_questions = list(state.get("asked_questions") or [])
         if not questions:
             interest_label = _lead_interest_label(lead) if lead else "this opportunity"
             questions = _fallback_sales_questions(interest_label)
             state["questions"] = questions
+        if not asked_questions and questions:
+            asked_questions = [questions[0]]
+            state["asked_questions"] = asked_questions
 
         current_index = max(0, min(int(state.get("current_question_index", 0)), len(questions) - 1))
         answers = list(state.get("answers") or [])
         no_input_retries = int(state.get("no_input_retries", 0))
+        clarification_retries = int(state.get("clarification_retries", 0))
+        total_clarifications = int(state.get("total_clarifications", 0))
+        pending_cross_questions = list(state.get("pending_cross_questions") or [])
+        is_cross_answer = bool(pending_cross_questions)
+        active_question = _active_sales_question(state, questions, current_index)
         speech_text = (SpeechResult or "").strip()
         confidence_value = None
         if Confidence:
@@ -1112,7 +1279,7 @@ async def twilio_conversation_webhook(
                 await db.commit()
                 return Response(content=_build_closing_twiml(closing_prompt), media_type="application/xml")
 
-            repeat_prompt = _sales_no_input_prompt(questions[current_index], no_input_retries)
+            repeat_prompt = _sales_no_input_prompt(active_question, no_input_retries)
             await _append_conversation_message(
                 db,
                 call,
@@ -1126,17 +1293,379 @@ async def twilio_conversation_webhook(
             await db.commit()
             return Response(content=_build_gather_twiml(repeat_prompt), media_type="application/xml")
 
+        is_clarification = _is_candidate_clarification_request(speech_text)
+        is_skip = _is_skip_request(speech_text)
+        is_repeat = _is_repeat_request(speech_text)
+
+        if is_repeat:
+            await _append_conversation_message(
+                db,
+                call,
+                role="user",
+                content=speech_text,
+                intent=f"sales_repeat_request_{current_index + 1}",
+                confidence=confidence_value,
+            )
+            repeat_prompt = f"Sure. {active_question}"
+            await _append_conversation_message(
+                db,
+                call,
+                role="assistant",
+                content=repeat_prompt,
+                intent=f"sales_repeat_prompt_{current_index + 1}",
+                confidence=1.0,
+            )
+            state["no_input_retries"] = 0
+            _update_sales_call_state(call, state)
+            await db.commit()
+            return Response(content=_build_gather_twiml(repeat_prompt), media_type="application/xml")
+
+        if is_skip:
+            await _append_conversation_message(
+                db,
+                call,
+                role="user",
+                content=speech_text,
+                intent=(
+                    f"sales_cross_skip_{current_index + 1}"
+                    if is_cross_answer
+                    else f"sales_main_skip_{current_index + 1}"
+                ),
+                confidence=confidence_value,
+            )
+
+            if is_cross_answer:
+                remaining_cross = pending_cross_questions[1:]
+                state["pending_cross_questions"] = remaining_cross
+                if remaining_cross:
+                    next_prompt = f"No problem. {remaining_cross[0]}"
+                    await _append_conversation_message(
+                        db,
+                        call,
+                        role="assistant",
+                        content=next_prompt,
+                        intent=f"sales_cross_question_{current_index + 1}",
+                        confidence=1.0,
+                    )
+                    _update_sales_call_state(call, state)
+                    await db.commit()
+                    return Response(content=_build_gather_twiml(next_prompt), media_type="application/xml")
+
+            # Move to next main question if available, otherwise close.
+            if current_index >= len(questions) - 1:
+                closing_prompt = _sales_closing_prompt()
+                await _append_conversation_message(
+                    db,
+                    call,
+                    role="assistant",
+                    content=closing_prompt,
+                    intent="sales_closing",
+                    confidence=1.0,
+                )
+                state["completed"] = True
+                state["completed_at"] = datetime.now(timezone.utc).isoformat()
+                _update_sales_call_state(call, state)
+                await db.commit()
+                return Response(content=_build_closing_twiml(closing_prompt), media_type="application/xml")
+
+            next_index = current_index + 1
+            next_main_question = await _resolve_next_main_question(
+                lead=lead,
+                state=state,
+                questions=questions,
+                next_index=next_index,
+                latest_candidate_response=speech_text,
+                answers=answers,
+            )
+            next_prompt = f"Sure, we can skip that. {next_main_question}"
+            await _append_conversation_message(
+                db,
+                call,
+                role="assistant",
+                content=next_prompt,
+                intent=f"sales_question_{next_index + 1}",
+                confidence=1.0,
+            )
+            state["current_question_index"] = next_index
+            state["pending_cross_questions"] = []
+            state["clarification_retries"] = 0
+            state["no_input_retries"] = 0
+            _update_sales_call_state(call, state)
+            await db.commit()
+            return Response(content=_build_gather_twiml(next_prompt), media_type="application/xml")
+
         await _append_conversation_message(
             db,
             call,
             role="user",
             content=speech_text,
-            intent=f"sales_answer_{current_index + 1}",
+            intent=(
+                f"sales_clarification_user_{current_index + 1}"
+                if is_clarification
+                else f"sales_answer_{current_index + 1}"
+            ),
             confidence=confidence_value,
         )
+
+        # If the candidate asks a clarification question, answer dynamically and
+        # re-ask the same screening question instead of advancing the flow.
+        if is_clarification:
+            is_initial_interest_question = (
+                not is_cross_answer
+                and current_index == 0
+                and "interested" in (questions[current_index] or "").lower()
+            )
+            if is_initial_interest_question and _is_affirmative_interest(speech_text):
+                answers.append(speech_text)
+                state["answers"] = answers
+                state["clarification_retries"] = 0
+                state["total_clarifications"] = total_clarifications + 1
+                next_index = 1 if len(questions) > 1 else 0
+                next_main_question = await _resolve_next_main_question(
+                    lead=lead,
+                    state=state,
+                    questions=questions,
+                    next_index=next_index,
+                    latest_candidate_response=speech_text,
+                    answers=answers,
+                )
+                fallback_prompt = (
+                    "Great question. I can share the main details now, and our team will help with deeper points. "
+                    f"Great, {next_main_question}"
+                )
+                next_prompt = fallback_prompt
+                if not settings.MOCK_SERVICES and settings.OPENAI_API_KEY:
+                    generated_prompt = await generate_sales_call_turn(
+                        company_name=COMPANY_NAME,
+                        caller_name=AI_CALLER_NAME,
+                        full_name=lead.full_name if lead and lead.full_name else "there",
+                        interest=lead.interest if lead else None,
+                        job_role=lead.job_role if lead else None,
+                        lead_description=lead.description if lead else None,
+                        latest_candidate_response=speech_text,
+                        next_question=next_main_question,
+                        prior_answers=answers[:-1],
+                        prior_questions=asked_questions,
+                        closing=False,
+                    )
+                    next_prompt = (generated_prompt or "").strip() or fallback_prompt
+
+                await _append_conversation_message(
+                    db,
+                    call,
+                    role="assistant",
+                    content=next_prompt,
+                    intent=f"sales_question_{next_index + 1}",
+                    confidence=1.0,
+                )
+                state["current_question_index"] = next_index
+                asked_questions.append(next_main_question)
+                state["asked_questions"] = asked_questions
+                state["pending_cross_questions"] = []
+                state["no_input_retries"] = 0
+                _update_sales_call_state(call, state)
+                await db.commit()
+                return Response(content=_build_gather_twiml(next_prompt), media_type="application/xml")
+
+            clarification_retries += 1
+            total_clarifications += 1
+            state["clarification_retries"] = clarification_retries
+            state["total_clarifications"] = total_clarifications
+
+            if (
+                clarification_retries > MAX_CLARIFICATION_RETRIES_PER_QUESTION
+                or total_clarifications > MAX_TOTAL_CLARIFICATION_RETRIES
+            ):
+                closing_prompt = _sales_clarification_limit_prompt()
+                await _append_conversation_message(
+                    db,
+                    call,
+                    role="assistant",
+                    content=closing_prompt,
+                    intent="sales_closing_clarification_limit",
+                    confidence=1.0,
+                )
+                state["completed"] = True
+                state["completed_at"] = datetime.now(timezone.utc).isoformat()
+                _update_sales_call_state(call, state)
+                await db.commit()
+                return Response(content=_build_closing_twiml(closing_prompt), media_type="application/xml")
+
+            fallback_prompt = (
+                "Thanks for your question. Based on current details, our team can clarify anything beyond this. "
+                f"To proceed, {active_question}"
+            )
+            next_prompt = fallback_prompt
+            if not settings.MOCK_SERVICES and settings.OPENAI_API_KEY:
+                generated_prompt = await generate_sales_call_turn(
+                    company_name=COMPANY_NAME,
+                    caller_name=AI_CALLER_NAME,
+                    full_name=lead.full_name if lead and lead.full_name else "there",
+                    interest=lead.interest if lead else None,
+                    job_role=lead.job_role if lead else None,
+                    lead_description=lead.description if lead else None,
+                    latest_candidate_response=speech_text,
+                    next_question=active_question,
+                    prior_answers=answers,
+                    prior_questions=asked_questions,
+                    closing=False,
+                )
+                next_prompt = (generated_prompt or "").strip() or fallback_prompt
+
+            await _append_conversation_message(
+                db,
+                call,
+                role="assistant",
+                content=next_prompt,
+                intent=f"sales_clarification_{current_index + 1}",
+                confidence=1.0,
+            )
+            state["no_input_retries"] = 0
+            _update_sales_call_state(call, state)
+            await db.commit()
+            logger.info(f"Twilio clarification reply sid={CallSid} prompt={next_prompt!r}")
+            return Response(content=_build_gather_twiml(next_prompt), media_type="application/xml")
+
         answers.append(speech_text)
         state["answers"] = answers
         state["no_input_retries"] = 0
+        state["clarification_retries"] = 0
+
+        # If candidate just answered a cross-question, continue remaining cross-questions
+        # for this round before moving to the next main question.
+        if is_cross_answer:
+            remaining_cross = pending_cross_questions[1:]
+            state["pending_cross_questions"] = remaining_cross
+            if remaining_cross:
+                next_cross_question = remaining_cross[0]
+                next_prompt = _sales_followup_prompt(next_cross_question)
+                if not settings.MOCK_SERVICES and settings.OPENAI_API_KEY:
+                    generated_prompt = await generate_sales_call_turn(
+                        company_name=COMPANY_NAME,
+                        caller_name=AI_CALLER_NAME,
+                        full_name=lead.full_name if lead and lead.full_name else "there",
+                        interest=lead.interest if lead else None,
+                        job_role=lead.job_role if lead else None,
+                        lead_description=lead.description if lead else None,
+                        latest_candidate_response=speech_text,
+                        next_question=next_cross_question,
+                        prior_answers=answers[:-1],
+                        prior_questions=asked_questions,
+                        closing=False,
+                    )
+                    next_prompt = (generated_prompt or "").strip() or next_prompt
+                await _append_conversation_message(
+                    db,
+                    call,
+                    role="assistant",
+                    content=next_prompt,
+                    intent=f"sales_cross_question_{current_index + 1}",
+                    confidence=1.0,
+                )
+                _update_sales_call_state(call, state)
+                await db.commit()
+                return Response(content=_build_gather_twiml(next_prompt), media_type="application/xml")
+
+            # Cross-question sequence complete; now move to the next main round.
+            if current_index >= len(questions) - 1:
+                closing_prompt = _sales_closing_prompt()
+                await _append_conversation_message(
+                    db,
+                    call,
+                    role="assistant",
+                    content=closing_prompt,
+                    intent="sales_closing",
+                    confidence=1.0,
+                )
+                conversation = await _ensure_conversation_for_call(db, call)
+                conversation.summary = " ".join(answer.strip() for answer in answers if answer.strip())[:500] or conversation.summary
+                state["completed"] = True
+                state["completed_at"] = datetime.now(timezone.utc).isoformat()
+                _update_sales_call_state(call, state)
+                await db.commit()
+                return Response(content=_build_closing_twiml(closing_prompt), media_type="application/xml")
+
+            next_index = current_index + 1
+            next_main_question = await _resolve_next_main_question(
+                lead=lead,
+                state=state,
+                questions=questions,
+                next_index=next_index,
+                latest_candidate_response=speech_text,
+                answers=answers,
+            )
+            main_prompt = _sales_followup_prompt(next_main_question)
+            if not settings.MOCK_SERVICES and settings.OPENAI_API_KEY:
+                generated_prompt = await generate_sales_call_turn(
+                    company_name=COMPANY_NAME,
+                    caller_name=AI_CALLER_NAME,
+                    full_name=lead.full_name if lead and lead.full_name else "there",
+                    interest=lead.interest if lead else None,
+                    job_role=lead.job_role if lead else None,
+                    lead_description=lead.description if lead else None,
+                    latest_candidate_response=speech_text,
+                    next_question=next_main_question,
+                    prior_answers=answers[:-1],
+                    prior_questions=asked_questions,
+                    closing=False,
+                )
+                main_prompt = (generated_prompt or "").strip() or main_prompt
+            await _append_conversation_message(
+                db,
+                call,
+                role="assistant",
+                content=main_prompt,
+                intent=f"sales_question_{next_index + 1}",
+                confidence=1.0,
+            )
+            state["current_question_index"] = next_index
+            asked_questions.append(next_main_question)
+            state["asked_questions"] = asked_questions
+            _update_sales_call_state(call, state)
+            await db.commit()
+            return Response(content=_build_gather_twiml(main_prompt), media_type="application/xml")
+
+        # Answer to a main question: generate cross-questions dynamically from response.
+        if MAX_CROSS_QUESTIONS_PER_ANSWER > 0 and current_index < len(questions) - 1 and _should_generate_cross_questions(questions[current_index], speech_text):
+            cross_questions = await generate_sales_cross_questions(
+                company_name=COMPANY_NAME,
+                caller_name=AI_CALLER_NAME,
+                interest=lead.interest if lead else None,
+                job_role=lead.job_role if lead else None,
+                asked_question=questions[current_index],
+                candidate_response=speech_text,
+                max_questions=MAX_CROSS_QUESTIONS_PER_ANSWER,
+            )
+            if cross_questions:
+                state["pending_cross_questions"] = cross_questions
+                first_cross_question = cross_questions[0]
+                cross_prompt = _sales_followup_prompt(first_cross_question)
+                if not settings.MOCK_SERVICES and settings.OPENAI_API_KEY:
+                    generated_prompt = await generate_sales_call_turn(
+                        company_name=COMPANY_NAME,
+                        caller_name=AI_CALLER_NAME,
+                        full_name=lead.full_name if lead and lead.full_name else "there",
+                        interest=lead.interest if lead else None,
+                        job_role=lead.job_role if lead else None,
+                        lead_description=lead.description if lead else None,
+                        latest_candidate_response=speech_text,
+                        next_question=first_cross_question,
+                        prior_answers=answers[:-1],
+                        prior_questions=asked_questions,
+                        closing=False,
+                    )
+                    cross_prompt = (generated_prompt or "").strip() or cross_prompt
+                await _append_conversation_message(
+                    db,
+                    call,
+                    role="assistant",
+                    content=cross_prompt,
+                    intent=f"sales_cross_question_{current_index + 1}",
+                    confidence=1.0,
+                )
+                _update_sales_call_state(call, state)
+                await db.commit()
+                return Response(content=_build_gather_twiml(cross_prompt), media_type="application/xml")
 
         if current_index >= len(questions) - 1:
             closing_prompt = _sales_closing_prompt()
@@ -1157,8 +1686,15 @@ async def twilio_conversation_webhook(
             return Response(content=_build_closing_twiml(closing_prompt), media_type="application/xml")
 
         next_index = current_index + 1
-        concern_reply = _sales_candidate_concern_reply(speech_text)
-        fallback_prompt = f"{concern_reply} {questions[next_index]}" if concern_reply else _sales_followup_prompt(questions[next_index])
+        next_main_question = await _resolve_next_main_question(
+            lead=lead,
+            state=state,
+            questions=questions,
+            next_index=next_index,
+            latest_candidate_response=speech_text,
+            answers=answers,
+        )
+        fallback_prompt = _sales_followup_prompt(next_main_question)
         next_prompt = fallback_prompt
         if not settings.MOCK_SERVICES and settings.OPENAI_API_KEY:
             generated_prompt = await generate_sales_call_turn(
@@ -1167,9 +1703,11 @@ async def twilio_conversation_webhook(
                 full_name=lead.full_name if lead and lead.full_name else "there",
                 interest=lead.interest if lead else None,
                 job_role=lead.job_role if lead else None,
+                lead_description=lead.description if lead else None,
                 latest_candidate_response=speech_text,
-                next_question=questions[next_index],
+                next_question=next_main_question,
                 prior_answers=answers[:-1],
+                prior_questions=asked_questions,
                 closing=False,
             )
             next_prompt = (generated_prompt or "").strip() or fallback_prompt
@@ -1182,6 +1720,8 @@ async def twilio_conversation_webhook(
             confidence=1.0,
         )
         state["current_question_index"] = next_index
+        asked_questions.append(next_main_question)
+        state["asked_questions"] = asked_questions
         _update_sales_call_state(call, state)
         await db.commit()
         logger.info(f"Twilio conversation next prompt sid={CallSid} prompt={next_prompt!r}")

@@ -29,6 +29,8 @@ async def lifespan(app: FastAPI):
                 await conn.execute(text("ALTER TABLE leads ADD COLUMN job_role VARCHAR(255) NULL"))
             if "years_experience" not in lead_columns:
                 await conn.execute(text("ALTER TABLE leads ADD COLUMN years_experience FLOAT NULL"))
+            if "description" not in lead_columns:
+                await conn.execute(text("ALTER TABLE leads ADD COLUMN description TEXT NULL"))
         except Exception as e:
             logger.warning(f"Lead schema backfill skipped or failed: {e}")
 
