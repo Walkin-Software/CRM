@@ -72,9 +72,10 @@ app = FastAPI(title="AI Phone Agent — CRM & Dev Proxy", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
+    max_age=3600,
 )
 
 # ── Core CRM Routes ──────────────────────────────────────────

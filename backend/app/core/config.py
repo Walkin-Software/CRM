@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     ASSEMBLYAI_SPEECH_MODEL: str = Field("universal-2", env="ASSEMBLYAI_SPEECH_MODEL")
     ASSEMBLYAI_POLL_INTERVAL_SECONDS: float = Field(2.0, env="ASSEMBLYAI_POLL_INTERVAL_SECONDS")
     ASSEMBLYAI_TRANSCRIPT_TIMEOUT_SECONDS: int = Field(180, env="ASSEMBLYAI_TRANSCRIPT_TIMEOUT_SECONDS")
+    ASSEMBLYAI_REALTIME_WS_URL: str = Field("wss://agents.assemblyai.com/v1/ws", env="ASSEMBLYAI_REALTIME_WS_URL")
+    ASSEMBLYAI_REALTIME_VOICE: str = Field("ivy", env="ASSEMBLYAI_REALTIME_VOICE")
+    REALTIME_CALLS_ENABLED: bool = Field(False, env="REALTIME_CALLS_ENABLED")
     MOCK_SERVICES: bool = Field(True, env="MOCK_SERVICES")
 
     # ── Twilio ─────────────────────────────────────────────────

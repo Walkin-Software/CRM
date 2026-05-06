@@ -28,5 +28,8 @@ if [ -n "$EXISTING_PID" ]; then
   kill -9 $EXISTING_PID
 fi
 
-echo "Launching FastAPI backend..."
-exec python3 -m uvicorn main:app --host "$HOST" --port "$PORT" --reload
+CERT_DIR="$(cd "$ROOT_DIR/.." && pwd)/cert"
+
+echo "Launching FastAPI backend with HTTPS..."
+echo "Using SSL certificates from $CERT_DIR"
+exec python3 -m uvicorn main:app --host "$HOST" --port "$PORT" --reload --ssl-keyfile="$CERT_DIR/key.pem" --ssl-certfile="$CERT_DIR/cert.pem"

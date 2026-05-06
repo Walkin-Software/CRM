@@ -1,29 +1,41 @@
 from typing import Optional
 from datetime import datetime, timezone
 import asyncio
+import base64
+import contextlib
 import os
+import ssl
 import tempfile
-from fastapi import APIRouter, Depends, Query, BackgroundTasks, HTTPException, Form
+import audioop
+import json
+import certifi
+from fastapi import APIRouter, Depends, Query, BackgroundTasks, HTTPException, Form, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
 from twilio.rest import Client as TwilioClient
 from twilio.base.exceptions import TwilioRestException
+from twilio.twiml.voice_response import VoiceResponse, Gather
 from pathlib import Path
 import mimetypes
 import httpx
+import websockets
 
 from app.core.database import get_db
+from app.core.logger import logger
 from app.core.security import get_current_user
 from app.core.config import settings
 from app.models.models import Call, User, Lead, Conversation, ConversationMessage
 from app.schemas.schemas import PaginatedResponse, CallOut, OutboundCallRequest
-from app.services.ai_content import generate_call_opening
+from app.services.ai_content import generate_sales_call_turn, generate_screening_questions
 
 router = APIRouter()
 
 HANGUP_THRESHOLD_SECONDS = 5
+COMPANY_NAME = "Walkin Software"
+AI_CALLER_NAME = "Siri"
+MAX_NO_INPUT_RETRIES = 2
 
 
 def _normalize_call_status(provider_status: str | None, duration_seconds: int | None = None) -> str:
@@ -191,6 +203,223 @@ def _normalize_recording_url(recording_url: str | None) -> str | None:
     if url.endswith(".mp3") or url.endswith(".wav"):
         return url
     return url
+
+
+def _public_base_url() -> str:
+    base = (settings.TWILIO_WEBHOOK_URL or "").strip().rstrip("/")
+    if base.endswith("/webhooks/twilio"):
+        return base[: -len("/webhooks/twilio")]
+    if base:
+        return base
+    return f"http://localhost:{settings.PORT}"
+
+
+def _public_wss_base_url() -> str:
+    base = _public_base_url()
+    if base.startswith("https://"):
+        return "wss://" + base[len("https://"):]
+    if base.startswith("http://"):
+        return "ws://" + base[len("http://"):]
+    return base
+
+
+def _lead_interest_label(lead: Lead) -> str:
+    return (lead.interest or lead.job_role or "the role you applied for").strip()
+
+
+async def _build_sales_call_questions(lead: Lead) -> list[str]:
+    interest_label = _lead_interest_label(lead)
+    generated = await generate_screening_questions(
+        full_name=lead.full_name,
+        email=lead.email,
+        phone=lead.phone,
+        job_role=lead.job_role,
+        years_experience=lead.years_experience,
+        interest=lead.interest,
+    )
+
+    if "demo" in interest_label.lower():
+        first_question = "Are you interested in proceeding so we can book a demo for you?"
+    else:
+        first_question = "Are you interested in proceeding with this opportunity?"
+
+    questions = [first_question]
+
+    if "demo" in interest_label.lower():
+        questions.append("Great. What date and time would be convenient for your demo discussion?")
+    else:
+        questions.append(generated[0] if generated else f"Could you briefly share your relevant experience for {interest_label}?")
+
+    if len(generated) > 1:
+        questions.append(generated[1])
+    else:
+        questions.append("What is the best day and time for our team to contact you again?")
+
+    return [question.strip() for question in questions[:3] if question and question.strip()]
+
+
+def _initial_sales_prompt(lead: Lead, first_question: str, intro_override: str | None = None) -> str:
+    interest_label = _lead_interest_label(lead)
+    intro = intro_override or f"Hello {lead.full_name}, this is {AI_CALLER_NAME} from {COMPANY_NAME}."
+    return f"{intro} We are calling regarding your interest in {interest_label}. {first_question}"
+
+
+def _fallback_sales_questions(interest_label: str) -> list[str]:
+    if "demo" in interest_label.lower():
+        return [
+            "Are you interested in proceeding so we can book a demo for you?",
+            "Great. What date and time would be convenient for your demo discussion?",
+            "Before we schedule it, could you briefly share your current experience?",
+        ]
+    return [
+        "Are you interested in proceeding with this opportunity?",
+        "Could you briefly share your relevant experience for this role?",
+        "What is the best day and time for our team to contact you again?",
+    ]
+
+
+def _sales_followup_prompt(next_question: str) -> str:
+    return f"Thank you for sharing that. {next_question}"
+
+
+def _sales_closing_prompt() -> str:
+    return f"Thank you for your time today. Our team at {COMPANY_NAME} will review your responses and contact you shortly. Have a great day."
+
+
+def _sales_candidate_concern_reply(candidate_text: str) -> str | None:
+    text = (candidate_text or "").lower()
+    if any(word in text for word in ["salary", "package", "ctc", "pay"]):
+        return "Thank you for asking. Compensation details are shared by our recruitment team after the next screening step."
+    if any(word in text for word in ["location", "remote", "hybrid", "onsite"]):
+        return "Thank you for asking. Work location and mode are confirmed by the hiring team based on the role and project."
+    if any(word in text for word in ["company", "walkin", "software", "know more", "about this", "about the", "demo", "product", "service"]):
+        return f"{COMPANY_NAME} is a software-focused organization, and our team is contacting you regarding your role interest."
+    if any(word in text for word in ["when", "process", "next", "timeline"]):
+        return "Our recruitment team will contact you with the next steps soon after this call."
+    return None
+
+
+def _sales_no_input_prompt(question: str, retry_count: int) -> str:
+    if retry_count <= 0:
+        return f"I didn't catch that. {question}"
+    return f"I'm sorry, I still could not hear your response clearly. {question}"
+
+
+def _sales_call_state(call: Call) -> dict:
+    metadata = dict(call.metadata_ or {})
+    state = metadata.get("sales_call_state") or {}
+    return dict(state)
+
+
+def _update_sales_call_state(call: Call, state: dict) -> None:
+    metadata = dict(call.metadata_ or {})
+    metadata["sales_call_state"] = state
+    call.metadata_ = metadata
+
+
+def _conversation_action_url() -> str:
+    return f"{_public_base_url()}/api/calls/webhooks/twilio/conversation"
+
+
+def _build_gather_twiml(prompt: str) -> str:
+    response = VoiceResponse()
+    gather = Gather(
+        input="speech",
+        action=_conversation_action_url(),
+        method="POST",
+        speech_timeout="auto",
+        timeout=6,
+        action_on_empty_result=True,
+    )
+    gather.say(prompt, voice="alice")
+    response.append(gather)
+    response.say("I did not receive a response. Please hold while I repeat the question.", voice="alice")
+    response.redirect(_conversation_action_url(), method="POST")
+    return str(response)
+
+
+def _build_realtime_stream_twiml(fallback_prompt: str) -> str:
+    stream_url = f"{_public_wss_base_url()}/calls/ws/media"
+    response = VoiceResponse()
+    connect = response.connect()
+    connect.stream(url=stream_url)
+
+    # If realtime stream ends/fails, continue the call with stable Gather mode.
+    gather = Gather(
+        input="speech",
+        action=_conversation_action_url(),
+        method="POST",
+        speech_timeout="auto",
+        timeout=6,
+        action_on_empty_result=True,
+    )
+    gather.say(fallback_prompt, voice="alice")
+    response.append(gather)
+    response.say("I did not receive a response. Please hold while I repeat the question.", voice="alice")
+    response.redirect(_conversation_action_url(), method="POST")
+    return str(response)
+
+
+def _build_closing_twiml(message: str) -> str:
+    response = VoiceResponse()
+    response.say(message, voice="alice")
+    response.hangup()
+    return str(response)
+
+
+async def _append_conversation_message(
+    db: AsyncSession,
+    call: Call,
+    *,
+    role: str,
+    content: str,
+    intent: str,
+    confidence: float | None = None,
+) -> None:
+    if not content.strip():
+        return
+    conversation = await _ensure_conversation_for_call(db, call)
+    db.add(
+        ConversationMessage(
+            conversation_id=conversation.id,
+            role=role,
+            content=content.strip(),
+            intent=intent,
+            confidence=confidence,
+        )
+    )
+
+
+def _build_realtime_system_prompt(lead: Lead | None, questions: list[str]) -> str:
+    lead_name = lead.full_name if lead else "Candidate"
+    interest_label = _lead_interest_label(lead) if lead else "the role discussed"
+    numbered_questions = "\n".join([f"{idx + 1}. {question}" for idx, question in enumerate(questions[:3])])
+    return (
+        f"You are {AI_CALLER_NAME}, a professional sales executive from {COMPANY_NAME}. "
+        "This is a live phone conversation with a candidate. "
+        f"Greet the candidate by name ({lead_name}), mention the call is about their interest in {interest_label}, "
+        "and then ask qualification questions one by one. "
+        "After each candidate response, acknowledge briefly and continue with the next question. "
+        "If the candidate asks something outside the flow, answer briefly and steer back to the next question. "
+        "If the interest is demo, ensure a date and time is captured. "
+        "When all questions are done, thank the candidate and end politely. "
+        "Keep each response short and natural for phone conversation. "
+        "The target question sequence is:\n"
+        f"{numbered_questions}"
+    )
+
+
+def _twilio_media_to_pcm24k(media_payload_b64: str) -> bytes:
+    ulaw_bytes = base64.b64decode(media_payload_b64)
+    pcm8k = audioop.ulaw2lin(ulaw_bytes, 2)
+    pcm24k, _ = audioop.ratecv(pcm8k, 2, 1, 8000, 24000, None)
+    return pcm24k
+
+
+def _pcm24k_to_twilio_media_b64(pcm24k: bytes) -> str:
+    pcm8k, _ = audioop.ratecv(pcm24k, 2, 1, 24000, 8000, None)
+    ulaw_bytes = audioop.lin2ulaw(pcm8k, 2)
+    return base64.b64encode(ulaw_bytes).decode()
 
 
 def _recording_url_candidates(recording_url: str) -> list[str]:
@@ -606,7 +835,7 @@ async def _refresh_recording_url_from_twilio(db: AsyncSession, call: Call) -> bo
 @router.get("/", response_model=PaginatedResponse)
 async def list_calls(
     page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=1000),
+    page_size: int = Query(10, ge=1, le=100),
     status: Optional[str] = Query(None),
     direction: Optional[str] = Query(None),
     lead_id: Optional[str] = Query(None),
@@ -620,10 +849,10 @@ async def list_calls(
         and settings.TWILIO_AUTH_TOKEN
     )
 
-    if twilio_live_mode:
+    if twilio_live_mode and page == 1:
         client = TwilioClient(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
-        # Pull missing calls from Twilio so UI history includes all triggered calls.
-        await _import_recent_twilio_calls(db, client, limit=200)
+        # Keep the first page fresh without making every paginated request expensive.
+        await _import_recent_twilio_calls(db, client, limit=min(max(page_size * 2, 20), 50))
 
     query = select(Call)
 
@@ -644,12 +873,12 @@ async def list_calls(
 
     # Paginate
     offset = (page - 1) * page_size
-    query = query.order_by(Call.created_at.desc()).offset(offset).limit(page_size)
+    query = query.order_by(Call.created_at.desc(), Call.id.desc()).offset(offset).limit(page_size)
     result = await db.execute(query)
     calls = result.scalars().all()
 
     # Keep DB history fresh even if Twilio webhook delivery is delayed/missed.
-    if twilio_live_mode:
+    if twilio_live_mode and page == 1:
         client = TwilioClient(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
         changed = False
         for call in calls:
@@ -723,11 +952,11 @@ async def outbound_call(
         raise HTTPException(status_code=404, detail="Lead not found")
 
     to_number = payload.to_number or lead.phone
-    ai_script = payload.message or await generate_call_opening(
-        full_name=lead.full_name,
-        interest=lead.interest,
-        job_role=lead.job_role,
-        years_experience=lead.years_experience,
+    sales_questions = await _build_sales_call_questions(lead)
+    initial_prompt = _initial_sales_prompt(
+        lead,
+        sales_questions[0],
+        payload.message,
     )
 
     twilio_sid = None
@@ -740,22 +969,30 @@ async def outbound_call(
 
         try:
             client = TwilioClient(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
-            base_url = _webhook_base_url()
+            base_url = _public_base_url()
+            # Use the Gather flow as the stable production path; follow-up turns are
+            # generated dynamically in the conversation webhook.
+            twiml_payload = _build_gather_twiml(initial_prompt)
             twilio_call = client.calls.create(
                 to=to_number,
                 from_=settings.TWILIO_PHONE_NUMBER,
-                twiml=f"<Response><Say voice='alice'>{ai_script}</Say></Response>",
+                twiml=twiml_payload,
                 record=True,
-                status_callback=f"{base_url}/calls/webhooks/twilio/status",
+                status_callback=f"{base_url}/api/calls/webhooks/twilio/status",
                 status_callback_event=["initiated", "ringing", "answered", "completed"],
                 status_callback_method="POST",
-                recording_status_callback=f"{base_url}/calls/webhooks/twilio/recording",
+                recording_status_callback=f"{base_url}/api/calls/webhooks/twilio/recording",
                 recording_status_callback_method="POST",
             )
             twilio_sid = twilio_call.sid
             provider_status = _normalize_call_status(twilio_call.status, 0)
             provider = "twilio"
+            logger.info(
+                f"Outbound call triggered sid={twilio_sid} lead_id={lead.id} to={to_number} "
+                f"mode=gather_ai"
+            )
         except TwilioRestException as exc:
+            logger.error(f"Twilio outbound call failed lead_id={lead.id} to={to_number}: {exc.msg}")
             raise HTTPException(status_code=502, detail=f"Twilio call failed: {exc.msg}")
 
     if settings.MOCK_SERVICES:
@@ -770,7 +1007,21 @@ async def outbound_call(
         to_number=to_number,
         duration_seconds=0,
         handled_by="ai",
-        metadata_={"ai_script": ai_script, "source": "crm_outbound", "provider": provider},
+        metadata_={
+            "ai_script": initial_prompt,
+            "source": "crm_outbound",
+            "provider": provider,
+            "call_mode": "gather_ai",
+            "sales_call_state": {
+                "questions": sales_questions,
+                "answers": [],
+                "current_question_index": 0,
+                "no_input_retries": 0,
+                "completed": False,
+                "company_name": COMPANY_NAME,
+                "caller_name": AI_CALLER_NAME,
+            },
+        },
         started_at=datetime.now(timezone.utc),
     )
     db.add(call)
@@ -781,15 +1032,374 @@ async def outbound_call(
     await db.commit()
     await db.refresh(call)
 
+    await _append_conversation_message(
+        db,
+        call,
+        role="assistant",
+        content=initial_prompt,
+        intent="sales_question_1",
+        confidence=1.0,
+    )
+    await db.commit()
+
     return {
         "call_id": call.id,
         "lead_id": lead.id,
         "status": call.status,
         "provider": provider,
         "twilio_call_sid": twilio_sid,
-        "ai_script": ai_script,
+        "ai_script": initial_prompt,
         "to_number": to_number,
+        "call_mode": "gather_ai",
     }
+
+
+@router.get("/webhooks/twilio/conversation")
+async def twilio_conversation_webhook_probe():
+    # Some tunnel checks/manual tests use GET; keep this endpoint non-404.
+    return {"status": "ok", "endpoint": "twilio_conversation", "method": "GET"}
+
+
+@router.post("/webhooks/twilio/conversation")
+async def twilio_conversation_webhook(
+    CallSid: str = Form(...),
+    SpeechResult: Optional[str] = Form(None),
+    Confidence: Optional[str] = Form(None),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        logger.info(f"Twilio conversation webhook sid={CallSid} speech={(SpeechResult or '').strip()!r}")
+        call = (await db.execute(select(Call).where(Call.twilio_call_sid == CallSid))).scalar_one_or_none()
+        if not call:
+            return Response(content=_build_closing_twiml("We could not locate this call session. Goodbye."), media_type="application/xml")
+
+        lead = None
+        if call.lead_id:
+            lead = (await db.execute(select(Lead).where(Lead.id == call.lead_id))).scalar_one_or_none()
+
+        state = _sales_call_state(call)
+        questions = list(state.get("questions") or [])
+        if not questions:
+            interest_label = _lead_interest_label(lead) if lead else "this opportunity"
+            questions = _fallback_sales_questions(interest_label)
+            state["questions"] = questions
+
+        current_index = max(0, min(int(state.get("current_question_index", 0)), len(questions) - 1))
+        answers = list(state.get("answers") or [])
+        no_input_retries = int(state.get("no_input_retries", 0))
+        speech_text = (SpeechResult or "").strip()
+        confidence_value = None
+        if Confidence:
+            try:
+                confidence_value = float(Confidence)
+            except ValueError:
+                confidence_value = None
+
+        if not speech_text:
+            if no_input_retries >= MAX_NO_INPUT_RETRIES:
+                closing_prompt = "Since I could not hear your response clearly, I will end the call for now. Thank you for your time."
+                await _append_conversation_message(
+                    db,
+                    call,
+                    role="assistant",
+                    content=closing_prompt,
+                    intent="sales_closing",
+                    confidence=1.0,
+                )
+                state["completed"] = True
+                state["completed_at"] = datetime.now(timezone.utc).isoformat()
+                _update_sales_call_state(call, state)
+                await db.commit()
+                return Response(content=_build_closing_twiml(closing_prompt), media_type="application/xml")
+
+            repeat_prompt = _sales_no_input_prompt(questions[current_index], no_input_retries)
+            await _append_conversation_message(
+                db,
+                call,
+                role="assistant",
+                content=repeat_prompt,
+                intent=f"sales_question_repeat_{current_index + 1}",
+                confidence=1.0,
+            )
+            state["no_input_retries"] = no_input_retries + 1
+            _update_sales_call_state(call, state)
+            await db.commit()
+            return Response(content=_build_gather_twiml(repeat_prompt), media_type="application/xml")
+
+        await _append_conversation_message(
+            db,
+            call,
+            role="user",
+            content=speech_text,
+            intent=f"sales_answer_{current_index + 1}",
+            confidence=confidence_value,
+        )
+        answers.append(speech_text)
+        state["answers"] = answers
+        state["no_input_retries"] = 0
+
+        if current_index >= len(questions) - 1:
+            closing_prompt = _sales_closing_prompt()
+            await _append_conversation_message(
+                db,
+                call,
+                role="assistant",
+                content=closing_prompt,
+                intent="sales_closing",
+                confidence=1.0,
+            )
+            conversation = await _ensure_conversation_for_call(db, call)
+            conversation.summary = " ".join(answer.strip() for answer in answers if answer.strip())[:500] or conversation.summary
+            state["completed"] = True
+            state["completed_at"] = datetime.now(timezone.utc).isoformat()
+            _update_sales_call_state(call, state)
+            await db.commit()
+            return Response(content=_build_closing_twiml(closing_prompt), media_type="application/xml")
+
+        next_index = current_index + 1
+        concern_reply = _sales_candidate_concern_reply(speech_text)
+        fallback_prompt = f"{concern_reply} {questions[next_index]}" if concern_reply else _sales_followup_prompt(questions[next_index])
+        next_prompt = fallback_prompt
+        if not settings.MOCK_SERVICES and settings.OPENAI_API_KEY:
+            generated_prompt = await generate_sales_call_turn(
+                company_name=COMPANY_NAME,
+                caller_name=AI_CALLER_NAME,
+                full_name=lead.full_name if lead and lead.full_name else "there",
+                interest=lead.interest if lead else None,
+                job_role=lead.job_role if lead else None,
+                latest_candidate_response=speech_text,
+                next_question=questions[next_index],
+                prior_answers=answers[:-1],
+                closing=False,
+            )
+            next_prompt = (generated_prompt or "").strip() or fallback_prompt
+        await _append_conversation_message(
+            db,
+            call,
+            role="assistant",
+            content=next_prompt,
+            intent=f"sales_question_{next_index + 1}",
+            confidence=1.0,
+        )
+        state["current_question_index"] = next_index
+        _update_sales_call_state(call, state)
+        await db.commit()
+        logger.info(f"Twilio conversation next prompt sid={CallSid} prompt={next_prompt!r}")
+        return Response(content=_build_gather_twiml(next_prompt), media_type="application/xml")
+    except Exception:
+        logger.exception(f"Twilio conversation webhook failed sid={CallSid}")
+        # Always return valid TwiML so Twilio does not play an application error message.
+        return Response(
+            content=_build_closing_twiml("Thank you for your time. We will call you again shortly."),
+            media_type="application/xml",
+        )
+
+
+@router.websocket("/ws/media")
+async def twilio_media_stream_bridge(
+    websocket: WebSocket,
+    db: AsyncSession = Depends(get_db),
+):
+    await websocket.accept()
+
+    stream_sid: str | None = None
+    call: Call | None = None
+    lead: Lead | None = None
+    ai_session_ready = asyncio.Event()
+
+    if not settings.ASSEMBLYAI_API_KEY or not settings.ASSEMBLYAI_REALTIME_WS_URL:
+        logger.error("Realtime stream rejected: AssemblyAI realtime provider is not configured")
+        await websocket.close(code=1000)
+        return
+
+    # Build a certifi-backed SSL context so macOS Python trusts AssemblyAI's cert.
+    _ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+
+    try:
+        logger.info("Twilio media websocket connected; initializing realtime AI bridge")
+        async with websockets.connect(
+            settings.ASSEMBLYAI_REALTIME_WS_URL,
+            ssl=_ssl_ctx,
+            additional_headers={"Authorization": f"Bearer {settings.ASSEMBLYAI_API_KEY}"},
+            ping_interval=20,
+            ping_timeout=20,
+        ) as ai_ws:
+            logger.info("Realtime AI websocket connected")
+
+            # AssemblyAI agents API starts speaking immediately on session.update;
+            # it does NOT send a session.ready event.  Mark ready right away.
+            ai_session_ready.set()
+
+            async def ai_listener() -> None:
+                nonlocal stream_sid
+                async for raw_message in ai_ws:
+                    try:
+                        event = json.loads(raw_message)
+                    except Exception:
+                        # Binary frame — skip
+                        continue
+                    event_type = event.get("type")
+
+                    # session.ready (some providers send this, AssemblyAI does not)
+                    if event_type == "session.ready":
+                        logger.info(f"Realtime AI session ready stream_sid={stream_sid}")
+                        ai_session_ready.set()
+                        continue
+
+                    if event_type in {"error", "session.error"}:
+                        logger.error(f"Realtime AI error stream_sid={stream_sid}: {event}")
+                        continue
+
+                    # AssemblyAI audio reply: {"reply_id": "...", "data": "<base64-pcm>"}
+                    # No "type" field — detect by presence of "data" key.
+                    if "data" in event and event_type is None and stream_sid:
+                        try:
+                            pcm_bytes = base64.b64decode(event["data"])
+                            twilio_payload = _pcm24k_to_twilio_media_b64(pcm_bytes)
+                            await websocket.send_json(
+                                {
+                                    "event": "media",
+                                    "streamSid": stream_sid,
+                                    "media": {"payload": twilio_payload},
+                                }
+                            )
+                        except Exception as audio_err:
+                            logger.error(f"Failed to forward AI audio to Twilio: {audio_err}")
+                        continue
+
+                    # Legacy OpenAI Realtime-style audio event
+                    if event_type == "reply.audio" and stream_sid:
+                        try:
+                            pcm24k = base64.b64decode(event.get("data", ""))
+                            twilio_payload = _pcm24k_to_twilio_media_b64(pcm24k)
+                            await websocket.send_json(
+                                {
+                                    "event": "media",
+                                    "streamSid": stream_sid,
+                                    "media": {"payload": twilio_payload},
+                                }
+                            )
+                        except Exception as audio_err:
+                            logger.error(f"Failed to forward AI audio (reply.audio) to Twilio: {audio_err}")
+                        continue
+
+                    if event_type in {"transcript.user", "transcript.human"} and call:
+                        await _append_conversation_message(
+                            db,
+                            call,
+                            role="user",
+                            content=(event.get("text") or "").strip(),
+                            intent="realtime_user_transcript",
+                            confidence=1.0,
+                        )
+                        await db.commit()
+                        continue
+
+                    if event_type == "transcript.agent" and call:
+                        logger.info(f"AI agent said: '{(event.get('text') or '').strip()}'")
+                        await _append_conversation_message(
+                            db,
+                            call,
+                            role="assistant",
+                            content=(event.get("text") or "").strip(),
+                            intent="realtime_agent_transcript",
+                            confidence=1.0,
+                        )
+                        await db.commit()
+                        continue
+
+            ai_task = asyncio.create_task(ai_listener())
+
+            try:
+                while True:
+                    raw = await websocket.receive_text()
+                    try:
+                        payload = json.loads(raw)
+                    except Exception:
+                        logger.error("Invalid Twilio media payload received (non-JSON)")
+                        continue
+                    event = payload.get("event")
+
+                    if event == "start":
+                        start_data = payload.get("start") or {}
+                        stream_sid = start_data.get("streamSid")
+                        call_sid = start_data.get("callSid")
+                        logger.info(f"Twilio media stream start call_sid={call_sid} stream_sid={stream_sid}")
+
+                        if call_sid:
+                            call = (
+                                await db.execute(select(Call).where(Call.twilio_call_sid == call_sid))
+                            ).scalar_one_or_none()
+                            if call and call.lead_id:
+                                lead = (
+                                    await db.execute(select(Lead).where(Lead.id == call.lead_id))
+                                ).scalar_one_or_none()
+
+                        questions: list[str] = []
+                        if call:
+                            state = _sales_call_state(call)
+                            questions = list(state.get("questions") or [])
+                        if not questions:
+                            interest_label = _lead_interest_label(lead) if lead else "this opportunity"
+                            questions = _fallback_sales_questions(interest_label)
+
+                        greeting = (
+                            f"Hello {lead.full_name}, this is {AI_CALLER_NAME} from {COMPANY_NAME}."
+                            if lead else f"Hello, this is {AI_CALLER_NAME} from {COMPANY_NAME}."
+                        )
+                        await ai_ws.send(
+                            json.dumps(
+                                {
+                                    "type": "session.update",
+                                    "session": {
+                                        "system_prompt": _build_realtime_system_prompt(lead, questions),
+                                        "greeting": greeting,
+                                        "output": {"voice": settings.ASSEMBLYAI_REALTIME_VOICE},
+                                    },
+                                }
+                            )
+                        )
+                        logger.info(f"Realtime session.update sent call_sid={call_sid} stream_sid={stream_sid}")
+                        continue
+
+                    if event == "media":
+                        if not ai_session_ready.is_set():
+                            continue
+                        media = payload.get("media") or {}
+                        media_payload = media.get("payload")
+                        if not media_payload:
+                            continue
+                        pcm24k = _twilio_media_to_pcm24k(media_payload)
+                        # Send user audio to AssemblyAI agents API.
+                        await ai_ws.send(
+                            json.dumps(
+                                {
+                                    "type": "input.audio",
+                                    "audio": base64.b64encode(pcm24k).decode(),
+                                }
+                            )
+                        )
+                        continue
+
+                    if event == "stop":
+                        logger.info(f"Twilio media stream stop stream_sid={stream_sid}")
+                        break
+
+                    if event == "connected":
+                        logger.info("Twilio media stream connected event received")
+                        continue
+            except WebSocketDisconnect:
+                logger.warning(f"Twilio media websocket disconnected stream_sid={stream_sid}")
+            finally:
+                ai_task.cancel()
+                with contextlib.suppress(Exception):
+                    await ai_task
+                logger.info(f"Realtime bridge loop finalized stream_sid={stream_sid}")
+    except Exception:
+        logger.exception("Realtime bridge failure; falling back to Gather flow from TwiML")
+        with contextlib.suppress(Exception):
+            # Close normally so Twilio continues with fallback Gather in the same TwiML.
+            await websocket.close(code=1000)
 
 
 @router.post("/webhooks/twilio/status")
@@ -815,7 +1425,17 @@ async def twilio_call_status_webhook(
     call.metadata_ = metadata
 
     await db.commit()
+    logger.info(
+        f"Twilio status webhook sid={CallSid} raw={CallStatus} normalized={call.status} "
+        f"duration={call.duration_seconds}"
+    )
     return {"status": "ok", "call_id": call.id, "normalized_status": call.status}
+
+
+@router.get("/webhooks/twilio/status")
+async def twilio_call_status_webhook_probe():
+    # Some tunnel checks/manual tests use GET; keep this endpoint non-404.
+    return {"status": "ok", "endpoint": "twilio_status", "method": "GET"}
 
 
 @router.post("/webhooks/twilio/recording")
@@ -870,6 +1490,12 @@ async def twilio_recording_webhook(
         "recording_url": call.recording_url,
         "transcript_available": bool(transcript_text),
     }
+
+
+@router.get("/webhooks/twilio/recording")
+async def twilio_recording_webhook_probe():
+    # Some tunnel checks/manual tests use GET; keep this endpoint non-404.
+    return {"status": "ok", "endpoint": "twilio_recording", "method": "GET"}
 
 
 @router.post("/backfill-recordings")

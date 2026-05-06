@@ -165,3 +165,61 @@ async def generate_call_opening(
     except Exception:
         role = job_role or interest or "your profile"
         return f"Hi {full_name}, this is Skill Lab AI assistant calling about {role}. Is this a good time for a 2-minute qualification chat?"
+
+
+async def generate_sales_call_turn(
+    *,
+    company_name: str,
+    caller_name: str,
+    full_name: str,
+    interest: Optional[str],
+    job_role: Optional[str],
+    latest_candidate_response: str,
+    next_question: Optional[str] = None,
+    prior_answers: Optional[list[str]] = None,
+    closing: bool = False,
+) -> str:
+    fallback = (
+        f"Thank you for your time, {full_name}. Our team at {company_name} will review your responses and get back to you soon."
+        if closing
+        else f"Thank you for your answer. {next_question}"
+    )
+
+    if settings.MOCK_SERVICES or not settings.OPENAI_API_KEY:
+        return fallback
+
+    client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+    payload = {
+        "company_name": company_name,
+        "caller_name": caller_name,
+        "full_name": full_name,
+        "interest": interest,
+        "job_role": job_role,
+        "latest_candidate_response": latest_candidate_response,
+        "next_question": next_question,
+        "prior_answers": prior_answers or [],
+        "closing": closing,
+    }
+
+    system_prompt = (
+        f"You are {caller_name}, a concise and professional sales executive from {company_name}. "
+        "You are speaking on a phone call with a lead. "
+        "If the lead asks something, briefly answer it naturally, then smoothly move the call forward. "
+        "Keep the response under 45 words. "
+        "If closing is true, thank the lead warmly and end the call."
+    )
+
+    try:
+        response = await client.chat.completions.create(
+            model=settings.OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps(payload)},
+            ],
+            temperature=0.5,
+            max_tokens=140,
+        )
+        content = (response.choices[0].message.content or "").strip()
+        return content or fallback
+    except Exception:
+        return fallback
