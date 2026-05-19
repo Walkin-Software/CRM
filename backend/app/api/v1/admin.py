@@ -11,6 +11,8 @@ from app.core.database import get_db
 from app.core.security import require_role
 from app.models.models import Lead, Call, User, AuditLog
 from app.schemas.schemas import DashboardStats
+from app.core.cache import cache_get_json, cache_set_json
+from app.core.config import settings
 
 router = APIRouter()
 
@@ -24,6 +26,11 @@ async def get_dashboard_stats(
     Returns high-level KPI stats for the dashboard.
     All heavy queries are cached in production via Redis.
     """
+    cache_key = "admin:dashboard:stats"
+    cached = await cache_get_json(cache_key)
+    if cached:
+        return DashboardStats(**cached)
+
     today_start = datetime.combine(date.today(), datetime.min.time()).replace(tzinfo=timezone.utc)
 
     # Total leads
@@ -62,7 +69,7 @@ async def get_dashboard_stats(
     )).all()
     calls_by_direction = {row[0]: row[1] for row in direction_rows}
 
-    return DashboardStats(
+    response = DashboardStats(
         total_leads=total_leads,
         new_leads_today=new_leads_today,
         total_calls_today=total_calls_today,
@@ -72,6 +79,8 @@ async def get_dashboard_stats(
         calls_by_direction=calls_by_direction,
         top_intents=[],  # Populated by analytics service
     )
+    await cache_set_json(cache_key, response.model_dump(), settings.DASHBOARD_CACHE_TTL_SECONDS)
+    return response
 
 
 @router.get("/audit-logs")

@@ -25,6 +25,13 @@ class Settings(BaseSettings):
     # ── Redis ─────────────────────────────────────────────────
     REDIS_URL: str = Field("redis://localhost:6379", env="REDIS_URL")
     REDIS_TTL: int = Field(3600, env="REDIS_TTL_SECONDS")
+    DASHBOARD_CACHE_TTL_SECONDS: int = Field(60, env="DASHBOARD_CACHE_TTL_SECONDS")
+
+    # ── Queue / Workers ───────────────────────────────────────
+    CELERY_BROKER_URL: str = Field("redis://localhost:6379/0", env="CELERY_BROKER_URL")
+    CELERY_RESULT_BACKEND: str = Field("redis://localhost:6379/1", env="CELERY_RESULT_BACKEND")
+    INTERNAL_API_TOKEN: str = Field("local-internal-token", env="INTERNAL_API_TOKEN")
+    INTERNAL_API_BASE_URL: str = Field("", env="INTERNAL_API_BASE_URL")
 
     # ── JWT ───────────────────────────────────────────────────
     JWT_SECRET: str = Field("change-me-in-production", env="JWT_SECRET")
@@ -38,6 +45,7 @@ class Settings(BaseSettings):
     # ── AI / Integrations ─────────────────────────────────────
     OPENAI_API_KEY: str = Field("", env="OPENAI_API_KEY")
     OPENAI_MODEL: str = Field("gpt-4o-mini", env="OPENAI_MODEL")
+    OPENAI_EMBEDDING_MODEL: str = Field("text-embedding-3-small", env="OPENAI_EMBEDDING_MODEL")
     ASSEMBLYAI_API_KEY: str = Field("", env="ASSEMBLYAI_API_KEY")
     ASSEMBLYAI_API_BASE_URL: str = Field("https://api.assemblyai.com/v2", env="ASSEMBLYAI_API_BASE_URL")
     ASSEMBLYAI_SPEECH_MODEL: str = Field("universal-2", env="ASSEMBLYAI_SPEECH_MODEL")
@@ -46,10 +54,17 @@ class Settings(BaseSettings):
     ASSEMBLYAI_REALTIME_WS_URL: str = Field("wss://agents.assemblyai.com/v1/ws", env="ASSEMBLYAI_REALTIME_WS_URL")
     ASSEMBLYAI_REALTIME_VOICE: str = Field("ivy", env="ASSEMBLYAI_REALTIME_VOICE")
     REALTIME_CALLS_ENABLED: bool = Field(False, env="REALTIME_CALLS_ENABLED")
+    AI_MEMORY_ENABLED: bool = Field(False, env="AI_MEMORY_ENABLED")
     MOCK_SERVICES: bool = Field(True, env="MOCK_SERVICES")
+
+    # ── Observability ─────────────────────────────────────────
+    ENABLE_METRICS: bool = Field(True, env="ENABLE_METRICS")
+    SENTRY_DSN: str = Field("", env="SENTRY_DSN")
 
     # ── Twilio ─────────────────────────────────────────────────
     TWILIO_ACCOUNT_SID: str = Field("", env="TWILIO_ACCOUNT_SID")
+    TWILIO_API_KEY: str = Field("", env="TWILIO_API_KEY")
+    TWILIO_API_SECRET: str = Field("", env="TWILIO_API_SECRET")
     TWILIO_AUTH_TOKEN: str = Field("", env="TWILIO_AUTH_TOKEN")
     TWILIO_PHONE_NUMBER: str = Field("", env="TWILIO_PHONE_NUMBER")
     TWILIO_WHATSAPP_NUMBER: str = Field("", env="TWILIO_WHATSAPP_NUMBER")

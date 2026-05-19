@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import smtplib
 from email.message import EmailMessage
-from fastapi import APIRouter, Depends, HTTPException, Form
+from fastapi import APIRouter, Depends, HTTPException, Form, Header
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from twilio.rest import Client as TwilioClient
@@ -20,6 +20,7 @@ from app.schemas.schemas import (
     NotificationOut,
 )
 from app.services.ai_content import generate_followup_messages
+from app.core.metrics import NOTIFICATION_SEND_TOTAL
 
 router = APIRouter()
 
@@ -102,13 +103,22 @@ def _dispatch_message(channel: str, to: str, body: str) -> tuple[str, str | None
     try:
         if channel in {"sms", "whatsapp"}:
             sid = _send_via_twilio(channel, to, body)
+            NOTIFICATION_SEND_TOTAL.labels(channel=channel, result="sent").inc()
             return "sent", sid, None
         if channel == "email":
             sid = _send_via_smtp(to, body)
+            NOTIFICATION_SEND_TOTAL.labels(channel=channel, result="sent").inc()
             return "sent", sid, None
+        NOTIFICATION_SEND_TOTAL.labels(channel=channel, result="failed").inc()
         return "failed", None, f"Unsupported channel: {channel}"
     except (TwilioRestException, RuntimeError, smtplib.SMTPException) as exc:
+        NOTIFICATION_SEND_TOTAL.labels(channel=channel, result="failed").inc()
         return "failed", None, str(exc)
+
+
+def _verify_internal_token(token: str | None) -> None:
+    if token != settings.INTERNAL_API_TOKEN:
+        raise HTTPException(status_code=403, detail="Invalid internal token")
 
 
 @router.get("/templates")
@@ -154,6 +164,37 @@ async def send_notification(
         "to": payload.to,
         "mock": settings.MOCK_SERVICES,
         "id": notif.id,
+    }
+
+
+@router.post("/internal/send")
+async def send_notification_internal(
+    payload: SendNotificationRequest,
+    x_internal_token: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    _verify_internal_token(x_internal_token)
+
+    status, external_sid, error_message = _dispatch_message(payload.channel, payload.to, payload.body)
+    notif = Notification(
+        lead_id=payload.lead_id,
+        channel=payload.channel,
+        recipient_phone=payload.to if payload.channel in {"sms", "whatsapp"} else None,
+        recipient_email=payload.to if payload.channel == "email" else None,
+        content=payload.body,
+        status=status,
+        external_sid=external_sid,
+        error_message=error_message,
+        sent_at=datetime.now(timezone.utc) if status == "sent" else None,
+    )
+    db.add(notif)
+    await db.commit()
+    await db.refresh(notif)
+
+    return {
+        "status": status,
+        "id": notif.id,
+        "error": error_message,
     }
 
 

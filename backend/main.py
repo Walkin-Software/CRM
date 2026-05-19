@@ -4,15 +4,29 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import httpx
 from sqlalchemy import text
+import sentry_sdk
+from sentry_sdk.integrations.fastapi import FastApiIntegration
+from prometheus_fastapi_instrumentator import Instrumentator
 
 from app.core.config import settings
 from app.core.database import engine, Base
+from app.core.redis_client import get_redis_client, close_redis_client
 from app.api.v1 import auth, leads, notes, follow_ups, users, admin, calls, students, jobs, ai_workflows, notifications, integrations, scheduling
 from app.core.logger import logger
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info(f"Starting CRM Service (Local Dev Mode) on port {settings.PORT}")
+    if settings.SENTRY_DSN:
+        sentry_sdk.init(
+            dsn=settings.SENTRY_DSN,
+            environment=settings.ENV,
+            integrations=[FastApiIntegration()],
+            traces_sample_rate=0.1,
+        )
+
+    await get_redis_client()
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         # Backfill columns in existing databases after model expansion.
@@ -31,6 +45,22 @@ async def lifespan(app: FastAPI):
                 await conn.execute(text("ALTER TABLE leads ADD COLUMN years_experience FLOAT NULL"))
             if "description" not in lead_columns:
                 await conn.execute(text("ALTER TABLE leads ADD COLUMN description TEXT NULL"))
+            if "lead_score" not in lead_columns:
+                await conn.execute(text("ALTER TABLE leads ADD COLUMN lead_score INT NOT NULL DEFAULT 0"))
+            if "lead_temperature" not in lead_columns:
+                await conn.execute(text("ALTER TABLE leads ADD COLUMN lead_temperature ENUM('hot','warm','cold') NOT NULL DEFAULT 'warm'"))
+            if "campaign_id" not in lead_columns:
+                await conn.execute(text("ALTER TABLE leads ADD COLUMN campaign_id VARCHAR(100) NULL"))
+            if "utm_source" not in lead_columns:
+                await conn.execute(text("ALTER TABLE leads ADD COLUMN utm_source VARCHAR(120) NULL"))
+            if "utm_medium" not in lead_columns:
+                await conn.execute(text("ALTER TABLE leads ADD COLUMN utm_medium VARCHAR(120) NULL"))
+            if "utm_campaign" not in lead_columns:
+                await conn.execute(text("ALTER TABLE leads ADD COLUMN utm_campaign VARCHAR(120) NULL"))
+            if "keyword" not in lead_columns:
+                await conn.execute(text("ALTER TABLE leads ADD COLUMN keyword VARCHAR(255) NULL"))
+            if "conversion_source" not in lead_columns:
+                await conn.execute(text("ALTER TABLE leads ADD COLUMN conversion_source VARCHAR(120) NULL"))
         except Exception as e:
             logger.warning(f"Lead schema backfill skipped or failed: {e}")
 
@@ -67,9 +97,13 @@ async def lifespan(app: FastAPI):
     app.state.client = httpx.AsyncClient()
     yield
     await app.state.client.aclose()
+    await close_redis_client()
     await engine.dispose()
 
 app = FastAPI(title="AI Phone Agent — CRM & Dev Proxy", lifespan=lifespan)
+
+if settings.ENABLE_METRICS:
+    Instrumentator().instrument(app).expose(app)
 
 app.add_middleware(
     CORSMiddleware,

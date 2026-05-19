@@ -2,9 +2,19 @@ from __future__ import annotations
 
 from typing import Optional
 import json
+import hashlib
+import time
 from openai import AsyncOpenAI
 
 from app.core.config import settings
+from app.core.cache import cache_get_json, cache_set_json
+from app.core.metrics import AI_LATENCY_SECONDS
+
+
+def _cache_key(prefix: str, payload: dict) -> str:
+    encoded = json.dumps(payload, sort_keys=True, default=str)
+    digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    return f"ai:{prefix}:{digest}"
 
 
 def _fallback_questions(full_name: str, job_role: Optional[str], years_experience: Optional[float]) -> list[str]:
@@ -26,8 +36,21 @@ async def generate_screening_questions(
     years_experience: Optional[float],
     interest: Optional[str],
 ) -> list[str]:
+    cache_payload = {
+        "full_name": full_name,
+        "job_role": job_role,
+        "years_experience": years_experience,
+        "interest": interest,
+    }
+    key = _cache_key("screening_questions", cache_payload)
+    cached = await cache_get_json(key)
+    if isinstance(cached, list) and len(cached) >= 3:
+        return [str(item) for item in cached[:3]]
+
     if settings.MOCK_SERVICES or not settings.OPENAI_API_KEY:
-        return _fallback_questions(full_name, job_role, years_experience)
+        fallback = _fallback_questions(full_name, job_role, years_experience)
+        await cache_set_json(key, fallback, ttl_seconds=settings.REDIS_TTL)
+        return fallback
 
     client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
     prompt = {
@@ -40,6 +63,7 @@ async def generate_screening_questions(
     }
 
     try:
+        start = time.perf_counter()
         response = await client.chat.completions.create(
             model=settings.OPENAI_MODEL,
             messages=[
@@ -53,13 +77,19 @@ async def generate_screening_questions(
             max_tokens=220,
         )
         text = (response.choices[0].message.content or "").strip()
+        AI_LATENCY_SECONDS.observe(max(time.perf_counter() - start, 0.0))
         questions = [line.strip(" -1234567890.") for line in text.splitlines() if line.strip()]
         questions = [q for q in questions if len(q) > 8][:3]
     except Exception:
-        return _fallback_questions(full_name, job_role, years_experience)
+        fallback = _fallback_questions(full_name, job_role, years_experience)
+        await cache_set_json(key, fallback, ttl_seconds=settings.REDIS_TTL)
+        return fallback
 
     if len(questions) < 3:
-        return _fallback_questions(full_name, job_role, years_experience)
+        fallback = _fallback_questions(full_name, job_role, years_experience)
+        await cache_set_json(key, fallback, ttl_seconds=settings.REDIS_TTL)
+        return fallback
+    await cache_set_json(key, questions, ttl_seconds=settings.REDIS_TTL)
     return questions
 
 
@@ -85,8 +115,21 @@ async def generate_followup_messages(
     years_experience: Optional[float],
     answers: list[str],
 ) -> tuple[str, str]:
+    cache_payload = {
+        "full_name": full_name,
+        "job_role": job_role,
+        "years_experience": years_experience,
+        "answers": answers,
+    }
+    key = _cache_key("followup_messages", cache_payload)
+    cached = await cache_get_json(key)
+    if isinstance(cached, dict) and cached.get("sms") and cached.get("email"):
+        return str(cached["sms"]), str(cached["email"])
+
     if settings.MOCK_SERVICES or not settings.OPENAI_API_KEY:
-        return _fallback_messages(full_name, job_role, answers)
+        sms, email_msg = _fallback_messages(full_name, job_role, answers)
+        await cache_set_json(key, {"sms": sms, "email": email_msg}, ttl_seconds=settings.REDIS_TTL)
+        return sms, email_msg
 
     client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
     prompt = {
@@ -99,6 +142,7 @@ async def generate_followup_messages(
     }
 
     try:
+        start = time.perf_counter()
         response = await client.chat.completions.create(
             model=settings.OPENAI_MODEL,
             messages=[
@@ -112,18 +156,24 @@ async def generate_followup_messages(
             max_tokens=280,
         )
         content = (response.choices[0].message.content or "").strip()
+        AI_LATENCY_SECONDS.observe(max(time.perf_counter() - start, 0.0))
         try:
             parsed = json.loads(content)
             sms = str(parsed.get("sms", "")).strip()
             email_msg = str(parsed.get("email", "")).strip()
             if sms and email_msg:
+                await cache_set_json(key, {"sms": sms, "email": email_msg}, ttl_seconds=settings.REDIS_TTL)
                 return sms, email_msg
         except Exception:
             pass
     except Exception:
-        return _fallback_messages(full_name, job_role, answers)
+        sms, email_msg = _fallback_messages(full_name, job_role, answers)
+        await cache_set_json(key, {"sms": sms, "email": email_msg}, ttl_seconds=settings.REDIS_TTL)
+        return sms, email_msg
 
-    return _fallback_messages(full_name, job_role, answers)
+    sms, email_msg = _fallback_messages(full_name, job_role, answers)
+    await cache_set_json(key, {"sms": sms, "email": email_msg}, ttl_seconds=settings.REDIS_TTL)
+    return sms, email_msg
 
 
 async def generate_call_opening(

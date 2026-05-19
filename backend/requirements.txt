@@ -18,8 +18,10 @@ twilio
 openai
 stripe
 httpx
+requests
 python-dotenv
 loguru
+sentry-sdk[fastapi]
 prometheus-fastapi-instrumentator
 pytest
 pytest-asyncio

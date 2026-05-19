@@ -9,7 +9,7 @@ import tempfile
 import audioop
 import json
 import certifi
-from fastapi import APIRouter, Depends, Query, BackgroundTasks, HTTPException, Form, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, Query, BackgroundTasks, HTTPException, Form, Header, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
@@ -26,9 +26,13 @@ from app.core.database import get_db
 from app.core.logger import logger
 from app.core.security import get_current_user
 from app.core.config import settings
+from app.core.metrics import OUTBOUND_CALLS_TOTAL, CALL_STATUS_WEBHOOK_TOTAL
 from app.models.models import Call, User, Lead, Conversation, ConversationMessage
 from app.schemas.schemas import PaginatedResponse, CallOut, OutboundCallRequest
 from app.services.ai_content import generate_sales_call_turn, generate_sales_cross_questions, generate_dynamic_next_question
+from app.services.lead_scoring import update_lead_score, score_delta_from_call_status
+from app.services.ai_memory import upsert_conversation_memory
+from app.workers.tasks import trigger_outbound_call, schedule_retry_chain, transcribe_call_recording
 
 router = APIRouter()
 
@@ -39,6 +43,49 @@ MAX_NO_INPUT_RETRIES = 2
 MAX_CLARIFICATION_RETRIES_PER_QUESTION = 2
 MAX_TOTAL_CLARIFICATION_RETRIES = 4
 MAX_CROSS_QUESTIONS_PER_ANSWER = 0
+
+
+def _verify_internal_token(token: str | None) -> None:
+    if token != settings.INTERNAL_API_TOKEN:
+        raise HTTPException(status_code=403, detail="Invalid internal token")
+
+
+def _queue_retry_for_call(call: Call) -> None:
+    metadata = dict(call.metadata_ or {})
+    retry_attempt = int(metadata.get("retry_attempt", 0))
+    if call.direction != "outbound" or not call.lead_id:
+        return
+    if metadata.get("retry_closed"):
+        return
+
+    # Avoid duplicate retry enqueue when provider sends repeated terminal status updates.
+    retry_marker = f"{call.status}:{retry_attempt}"
+    if metadata.get("retry_last_marker") == retry_marker:
+        return
+
+    try:
+        schedule_retry_chain.delay(call.lead_id, call.to_number, retry_attempt)
+    except Exception as exc:
+        logger.warning(f"Retry enqueue failed for call={call.id}: {exc}")
+        return
+    metadata["retry_attempt"] = retry_attempt + 1
+    metadata["retry_last_queued_at"] = datetime.now(timezone.utc).isoformat()
+    metadata["retry_last_marker"] = retry_marker
+    call.metadata_ = metadata
+
+
+def _twilio_http_auth() -> tuple[str, str] | None:
+    if settings.TWILIO_API_KEY and settings.TWILIO_API_SECRET:
+        return settings.TWILIO_API_KEY, settings.TWILIO_API_SECRET
+    if settings.TWILIO_ACCOUNT_SID and settings.TWILIO_AUTH_TOKEN:
+        return settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN
+    return None
+
+
+def _twilio_client() -> TwilioClient:
+    if settings.TWILIO_API_KEY and settings.TWILIO_API_SECRET and settings.TWILIO_ACCOUNT_SID:
+        return TwilioClient(settings.TWILIO_API_KEY, settings.TWILIO_API_SECRET, settings.TWILIO_ACCOUNT_SID)
+    return TwilioClient(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
 
 
 def _normalize_call_status(provider_status: str | None, duration_seconds: int | None = None) -> str:
@@ -924,12 +971,14 @@ def _resolve_recording_path(recording_url: str) -> Path:
 
 
 async def _fetch_external_recording_bytes(recording_url: str) -> tuple[bytes, str]:
-    if not settings.TWILIO_ACCOUNT_SID or not settings.TWILIO_AUTH_TOKEN:
+    auth = _twilio_http_auth()
+    if not auth:
         raise HTTPException(status_code=500, detail="Twilio credentials are required to fetch external recordings")
 
     errors: list[str] = []
+    unauthorized = False
     async with httpx.AsyncClient(
-        auth=(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN),
+        auth=auth,
         timeout=60.0,
     ) as client:
         for url in _recording_url_candidates(recording_url):
@@ -939,7 +988,18 @@ async def _fetch_external_recording_bytes(recording_url: str) -> tuple[bytes, st
                 media_type = resp.headers.get("content-type") or "audio/mpeg"
                 return resp.content, media_type
             except Exception as exc:
+                if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 401:
+                    unauthorized = True
                 errors.append(f"{url}: {exc}")
+
+    if unauthorized:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Failed to fetch external recording: Twilio returned 401 Unauthorized. "
+                "Update TWILIO_AUTH_TOKEN or configure TWILIO_API_KEY/TWILIO_API_SECRET in backend env."
+            ),
+        )
 
     raise HTTPException(status_code=502, detail=f"Failed to fetch external recording: {' | '.join(errors)}")
 
@@ -947,10 +1007,10 @@ async def _fetch_external_recording_bytes(recording_url: str) -> tuple[bytes, st
 async def _refresh_recording_url_from_twilio(db: AsyncSession, call: Call) -> bool:
     if not call.twilio_call_sid:
         return False
-    if not settings.TWILIO_ACCOUNT_SID or not settings.TWILIO_AUTH_TOKEN:
+    if not settings.TWILIO_ACCOUNT_SID or not _twilio_http_auth():
         return False
 
-    client = TwilioClient(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
+    client = _twilio_client()
     recording = None
 
     if call.recording_sid:
@@ -960,12 +1020,29 @@ async def _refresh_recording_url_from_twilio(db: AsyncSession, call: Call) -> bo
             recording = None
 
     if recording is None:
+        candidate_call_sids = [call.twilio_call_sid]
         try:
-            rows = client.recordings.list(call_sid=call.twilio_call_sid, limit=1)
-            if rows:
-                recording = rows[0]
+            tw_call = client.calls(call.twilio_call_sid).fetch()
+            parent_sid = getattr(tw_call, "parent_call_sid", None)
+            if parent_sid and parent_sid not in candidate_call_sids:
+                candidate_call_sids.append(parent_sid)
+            child_calls = client.calls.list(parent_call_sid=call.twilio_call_sid, limit=20)
+            for child in child_calls:
+                child_sid = getattr(child, "sid", None)
+                if child_sid and child_sid not in candidate_call_sids:
+                    candidate_call_sids.append(child_sid)
         except Exception:
-            recording = None
+            # Best-effort: keep fallback resilient even if Twilio call graph lookup fails.
+            pass
+
+        for sid in candidate_call_sids:
+            try:
+                rows = client.recordings.list(call_sid=sid, limit=1)
+                if rows:
+                    recording = rows[0]
+                    break
+            except Exception:
+                continue
 
     if recording is None:
         return False
@@ -1093,9 +1170,26 @@ async def schedule_call(
     
     if delay < 0:
         raise HTTPException(status_code=400, detail="Scheduled time must be in the future.")
-    
-    background_tasks.add_task(delayed_call_trigger, lead_id, to_number, delay)
-    return {"status": "scheduled", "delay_seconds": delay, "scheduled_at": scheduled_at}
+
+    # Queue-based scheduling is durable and survives API restarts.
+    try:
+        trigger_outbound_call.apply_async(args=[lead_id, to_number], countdown=int(delay), queue="call")
+    except Exception as exc:
+        logger.warning(f"Scheduled queue unavailable, using in-process fallback: {exc}")
+        background_tasks.add_task(delayed_call_trigger, lead_id, to_number, delay)
+        return {
+            "status": "scheduled",
+            "delay_seconds": delay,
+            "scheduled_at": scheduled_at,
+            "queued": False,
+            "fallback": "background_task",
+        }
+    return {
+        "status": "scheduled",
+        "delay_seconds": delay,
+        "scheduled_at": scheduled_at,
+        "queued": True,
+    }
 
 
 @router.post("/outbound")
@@ -1179,6 +1273,7 @@ async def outbound_call(
                 "company_name": COMPANY_NAME,
                 "caller_name": AI_CALLER_NAME,
             },
+            "retry_attempt": 0,
         },
         started_at=datetime.now(timezone.utc),
     )
@@ -1199,6 +1294,7 @@ async def outbound_call(
         confidence=1.0,
     )
     await db.commit()
+    OUTBOUND_CALLS_TOTAL.inc()
 
     return {
         "call_id": call.id,
@@ -1210,6 +1306,17 @@ async def outbound_call(
         "to_number": to_number,
         "call_mode": "gather_ai",
     }
+
+
+@router.post("/internal/outbound")
+async def outbound_call_internal(
+    payload: OutboundCallRequest,
+    x_internal_token: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    _verify_internal_token(x_internal_token)
+    internal_user = type("InternalUser", (), {"id": "internal-worker"})()
+    return await outbound_call(payload, db, internal_user)
 
 
 @router.get("/webhooks/twilio/conversation")
@@ -1955,6 +2062,7 @@ async def twilio_call_status_webhook(
 
     duration_seconds = int(CallDuration) if (CallDuration and str(CallDuration).isdigit()) else None
     call.status = _normalize_call_status(CallStatus, duration_seconds)
+    CALL_STATUS_WEBHOOK_TOTAL.labels(status=call.status).inc()
     if CallDuration and str(CallDuration).isdigit():
         call.duration_seconds = int(CallDuration)
     if call.status in {"answered", "hangup", "no_response"} and not call.ended_at:
@@ -1962,7 +2070,19 @@ async def twilio_call_status_webhook(
 
     metadata = dict(call.metadata_ or {})
     metadata["last_twilio_status"] = CallStatus
+    if call.status in {"answered", "completed", "in_progress"}:
+        metadata["retry_closed"] = True
     call.metadata_ = metadata
+
+    await update_lead_score(
+        db,
+        lead_id=call.lead_id,
+        score_delta=score_delta_from_call_status(call.status),
+    )
+
+    # Smart retry flow for missed outbound calls.
+    if call.status in {"no_response", "no_answer", "busy", "failed"}:
+        _queue_retry_for_call(call)
 
     await db.commit()
     logger.info(
@@ -1981,13 +2101,21 @@ async def twilio_call_status_webhook_probe():
 @router.post("/webhooks/twilio/recording")
 async def twilio_recording_webhook(
     CallSid: str = Form(...),
+    ParentCallSid: Optional[str] = Form(None),
+    DialCallSid: Optional[str] = Form(None),
     RecordingSid: Optional[str] = Form(None),
     RecordingUrl: Optional[str] = Form(None),
     RecordingDuration: Optional[str] = Form(None),
     TranscriptionText: Optional[str] = Form(None),
     db: AsyncSession = Depends(get_db),
 ):
-    call = (await db.execute(select(Call).where(Call.twilio_call_sid == CallSid))).scalar_one_or_none()
+    sid_candidates = [sid for sid in [CallSid, ParentCallSid, DialCallSid] if sid]
+    call = None
+    for sid in sid_candidates:
+        call = (await db.execute(select(Call).where(Call.twilio_call_sid == sid))).scalar_one_or_none()
+        if call:
+            break
+
     if not call:
         return {"status": "ignored", "reason": "call_not_found", "twilio_call_sid": CallSid}
 
@@ -1999,19 +2127,31 @@ async def twilio_recording_webhook(
     if RecordingDuration and str(RecordingDuration).isdigit():
         call.duration_seconds = int(RecordingDuration)
 
-    transcript_text = (TranscriptionText or "").strip() or await _transcribe_remote_recording(call.recording_url)
+    transcript_text = (TranscriptionText or "").strip()
     if transcript_text:
         conversation = await _ensure_conversation_for_call(db, call)
-        db.add(
-            ConversationMessage(
-                conversation_id=conversation.id,
-                role="user",
-                content=transcript_text,
-                intent="call_transcript",
-            )
+        message = ConversationMessage(
+            conversation_id=conversation.id,
+            role="user",
+            content=transcript_text,
+            intent="call_transcript",
         )
+        db.add(message)
+        await db.flush()
         if not conversation.summary:
             conversation.summary = transcript_text[:500]
+        await upsert_conversation_memory(
+            db,
+            lead_id=call.lead_id,
+            conversation_id=conversation.id,
+            message_id=message.id,
+            content=transcript_text,
+        )
+    elif call.recording_url:
+        try:
+            transcribe_call_recording.delay(call.id)
+        except Exception as exc:
+            logger.warning(f"Transcript worker enqueue failed call={call.id}: {exc}")
 
     if call.status not in {"answered", "hangup", "no_response"}:
         call.status = _normalize_call_status("completed", call.duration_seconds)
@@ -2020,7 +2160,10 @@ async def twilio_recording_webhook(
 
     metadata = dict(call.metadata_ or {})
     metadata["transcript_available"] = bool(transcript_text)
+    if not transcript_text and call.recording_url:
+        metadata["transcript_queued"] = True
     metadata["recording_webhook_received_at"] = datetime.now(timezone.utc).isoformat()
+    metadata["recording_webhook_sids"] = sid_candidates
     call.metadata_ = metadata
 
     await db.commit()
@@ -2036,6 +2179,53 @@ async def twilio_recording_webhook(
 async def twilio_recording_webhook_probe():
     # Some tunnel checks/manual tests use GET; keep this endpoint non-404.
     return {"status": "ok", "endpoint": "twilio_recording", "method": "GET"}
+
+
+@router.post("/internal/transcribe/{call_id}")
+async def transcribe_call_internal(
+    call_id: str,
+    x_internal_token: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    _verify_internal_token(x_internal_token)
+
+    call = (await db.execute(select(Call).where(Call.id == call_id))).scalar_one_or_none()
+    if not call:
+        raise HTTPException(status_code=404, detail="Call not found")
+    if not call.recording_url:
+        raise HTTPException(status_code=400, detail="Recording URL not available")
+
+    transcript_text = await _transcribe_remote_recording(call.recording_url)
+    if not transcript_text:
+        return {"status": "noop", "call_id": call.id, "reason": "transcript_empty"}
+
+    conversation = await _ensure_conversation_for_call(db, call)
+    message = ConversationMessage(
+        conversation_id=conversation.id,
+        role="user",
+        content=transcript_text,
+        intent="call_transcript",
+    )
+    db.add(message)
+    await db.flush()
+    if not conversation.summary:
+        conversation.summary = transcript_text[:500]
+
+    await upsert_conversation_memory(
+        db,
+        lead_id=call.lead_id,
+        conversation_id=conversation.id,
+        message_id=message.id,
+        content=transcript_text,
+    )
+
+    metadata = dict(call.metadata_ or {})
+    metadata["transcript_available"] = True
+    metadata["transcript_queued"] = False
+    call.metadata_ = metadata
+
+    await db.commit()
+    return {"status": "ok", "call_id": call.id, "transcript_saved": True}
 
 
 @router.post("/backfill-recordings")

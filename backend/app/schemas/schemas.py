@@ -91,6 +91,14 @@ class LeadCreate(BaseModel):
     status: Optional[str] = "new"
     assigned_to: Optional[str] = None
     tags: Optional[List[str]] = []
+    lead_score: Optional[int] = Field(0, ge=0, le=100)
+    lead_temperature: Optional[str] = None
+    campaign_id: Optional[str] = None
+    utm_source: Optional[str] = None
+    utm_medium: Optional[str] = None
+    utm_campaign: Optional[str] = None
+    keyword: Optional[str] = None
+    conversion_source: Optional[str] = None
     custom_metadata: Optional[Dict[str, Any]] = Field(default={})
 
     @field_validator("phone")
@@ -118,6 +126,14 @@ class LeadUpdate(BaseModel):
     status: Optional[str] = None
     assigned_to: Optional[str] = None
     tags: Optional[List[str]] = None
+    lead_score: Optional[int] = Field(default=None, ge=0, le=100)
+    lead_temperature: Optional[str] = None
+    campaign_id: Optional[str] = None
+    utm_source: Optional[str] = None
+    utm_medium: Optional[str] = None
+    utm_campaign: Optional[str] = None
+    keyword: Optional[str] = None
+    conversion_source: Optional[str] = None
 
 
 class LeadOut(BaseModel):
@@ -134,6 +150,14 @@ class LeadOut(BaseModel):
     status: str
     assigned_to: Optional[str]
     tags: List[str]
+    lead_score: int
+    lead_temperature: str
+    campaign_id: Optional[str]
+    utm_source: Optional[str]
+    utm_medium: Optional[str]
+    utm_campaign: Optional[str]
+    keyword: Optional[str]
+    conversion_source: Optional[str]
     custom_metadata: Optional[Dict[str, Any]] = Field(default={})
     created_at: datetime
     updated_at: datetime

@@ -10,7 +10,10 @@ const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000/api
 export const api = axios.create({
   baseURL: BASE_URL,
   timeout: 15000,
-  headers: { 'Content-Type': 'application/json' },
+  headers: {
+    'Content-Type': 'application/json',
+    'ngrok-skip-browser-warning': 'true',
+  },
 });
 
 // ── Request interceptor: attach JWT from localStorage ────────
@@ -32,7 +35,16 @@ api.interceptors.response.use(
       original._retry = true;
       try {
         const refresh_token = localStorage.getItem('refresh_token');
-        const { data } = await axios.post(`${BASE_URL}/auth/refresh`, { refresh_token });
+        const { data } = await axios.post(
+          `${BASE_URL}/auth/refresh`,
+          { refresh_token },
+          {
+            headers: {
+              'Content-Type': 'application/json',
+              'ngrok-skip-browser-warning': 'true',
+            },
+          }
+        );
         localStorage.setItem('access_token', data.access_token);
         original.headers.Authorization = `Bearer ${data.access_token}`;
         return api(original);

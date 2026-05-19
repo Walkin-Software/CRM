@@ -19,6 +19,14 @@ from app.services.lead_automation import trigger_lead_automation
 router = APIRouter()
 
 
+def _default_temperature(score: int) -> str:
+    if score >= 70:
+        return "hot"
+    if score >= 40:
+        return "warm"
+    return "cold"
+
+
 # ─── List & Search Leads ──────────────────────────────────────
 
 @router.get("", response_model=PaginatedResponse)
@@ -104,6 +112,14 @@ async def create_lead(
         status=payload.status or "new",
         assigned_to=payload.assigned_to,
         tags=payload.tags or [],
+        lead_score=payload.lead_score or 0,
+        lead_temperature=payload.lead_temperature or _default_temperature(payload.lead_score or 0),
+        campaign_id=payload.campaign_id,
+        utm_source=payload.utm_source,
+        utm_medium=payload.utm_medium,
+        utm_campaign=payload.utm_campaign,
+        keyword=payload.keyword,
+        conversion_source=payload.conversion_source,
         custom_metadata=payload.custom_metadata or {},
     )
     db.add(lead)
@@ -161,7 +177,15 @@ async def public_create_lead(
         years_experience=payload.years_experience,
         source="web_form",
         status="new",
-        tags=["public_trigger"]
+        tags=["public_trigger"],
+        lead_score=payload.lead_score or 0,
+        lead_temperature=payload.lead_temperature or _default_temperature(payload.lead_score or 0),
+        campaign_id=payload.campaign_id,
+        utm_source=payload.utm_source,
+        utm_medium=payload.utm_medium,
+        utm_campaign=payload.utm_campaign,
+        keyword=payload.keyword,
+        conversion_source=payload.conversion_source,
     )
     db.add(lead)
     await db.commit()
@@ -222,6 +246,7 @@ async def update_lead(
         new_value=update_data,
     ))
 
+    await db.commit()
     await db.refresh(lead, ["assigned_user"])
     return LeadOut.model_validate(lead, from_attributes=True)
 
@@ -242,4 +267,5 @@ async def delete_lead(
         raise HTTPException(status_code=404, detail="Lead not found.")
 
     await db.delete(lead)
+    await db.commit()
     logger.info(f"Lead deleted: {lead_id} by admin {current_user.id}")

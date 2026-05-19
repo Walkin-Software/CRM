@@ -87,6 +87,14 @@ class Lead(Base):
     )
     assigned_to: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     tags: Mapped[list] = mapped_column(JSON, default=list)
+    lead_score: Mapped[int] = mapped_column(Integer, default=0)
+    lead_temperature: Mapped[str] = mapped_column(Enum("hot", "warm", "cold"), default="warm")
+    campaign_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    utm_source: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    utm_medium: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    utm_campaign: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    keyword: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    conversion_source: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
     custom_metadata: Mapped[dict] = mapped_column("custom_metadata", JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -192,6 +200,19 @@ class ConversationMessage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     conversation: Mapped["Conversation"] = relationship("Conversation", back_populates="messages")
+
+
+class ConversationEmbedding(Base):
+    __tablename__ = "conversation_embeddings"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    lead_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("leads.id", ondelete="SET NULL"), nullable=True)
+    conversation_id: Mapped[str] = mapped_column(String(36), ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False)
+    message_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("conversation_messages.id", ondelete="SET NULL"), nullable=True)
+    embedding_model: Mapped[str] = mapped_column(String(120), nullable=False)
+    embedding: Mapped[list] = mapped_column(JSON, default=list)
+    content_excerpt: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class AIScreeningSession(Base):
