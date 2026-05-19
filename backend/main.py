@@ -9,14 +9,36 @@ from sentry_sdk.integrations.fastapi import FastApiIntegration
 from prometheus_fastapi_instrumentator import Instrumentator
 
 from app.core.config import settings
-from app.core.database import engine, Base
+from app.core.database import engine, Base, ensure_database_exists, seed_default_data
 from app.core.redis_client import get_redis_client, close_redis_client
 from app.api.v1 import auth, leads, notes, follow_ups, users, admin, calls, students, jobs, ai_workflows, notifications, integrations, scheduling
+from app.api.v1.calls import set_ngrok_url
 from app.core.logger import logger
+
+
+async def _detect_ngrok_url() -> str | None:
+    """Query the local ngrok agent API for the live HTTPS tunnel URL."""
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get("http://127.0.0.1:4040/api/tunnels", timeout=2.0)
+            for tunnel in resp.json().get("tunnels", []):
+                if tunnel.get("proto") == "https":
+                    return tunnel["public_url"].rstrip("/")
+    except Exception:
+        pass
+    return None
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info(f"Starting CRM Service (Local Dev Mode) on port {settings.PORT}")
+    await ensure_database_exists()
+
+    ngrok_url = await _detect_ngrok_url()
+    if ngrok_url:
+        set_ngrok_url(ngrok_url)
+    else:
+        logger.warning("ngrok tunnel not detected at startup — Twilio speech webhooks will not work until ngrok is running")
     if settings.SENTRY_DSN:
         sentry_sdk.init(
             dsn=settings.SENTRY_DSN,
@@ -94,6 +116,9 @@ async def lifespan(app: FastAPI):
                 await conn.execute(text("ALTER TABLE audit_logs MODIFY COLUMN id BIGINT NOT NULL AUTO_INCREMENT"))
         except Exception as e:
             logger.warning(f"Audit schema backfill skipped or failed: {e}")
+    # Seed default admin user + roles if the database is brand new
+    await seed_default_data()
+
     app.state.client = httpx.AsyncClient()
     yield
     await app.state.client.aclose()
@@ -107,10 +132,11 @@ if settings.ENABLE_METRICS:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
+    allow_origins=settings.ALLOWED_ORIGINS,
+    allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
+    expose_headers=["*"],
     max_age=3600,
 )
 

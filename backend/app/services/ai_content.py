@@ -9,6 +9,13 @@ from openai import AsyncOpenAI
 from app.core.config import settings
 from app.core.cache import cache_get_json, cache_set_json
 from app.core.metrics import AI_LATENCY_SECONDS
+from app.core.logger import logger
+
+
+# ── Shared AI completion with OpenAI → Groq fallback chain ───────────────────
+
+# Circuit breaker: once OpenAI returns 401 (bad key), skip it for the rest of this process
+_openai_auth_broken = False
 
 
 def _cache_key(prefix: str, payload: dict) -> str:
@@ -17,15 +24,72 @@ def _cache_key(prefix: str, payload: dict) -> str:
     return f"ai:{prefix}:{digest}"
 
 
-def _fallback_questions(full_name: str, job_role: Optional[str], years_experience: Optional[float]) -> list[str]:
-    role = job_role or "the role you are interested in"
-    exp = f"{years_experience:g}" if years_experience is not None else "your"
-    return [
-        f"Hi {full_name}, what motivated you to apply for {role}?",
-        f"Can you share one project that best reflects your {exp} years of experience?",
-        "What are your top 2 skills you want us to assess first?",
-    ]
+def _is_auth_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return "401" in msg or "invalid_api_key" in msg or "incorrect api key" in msg
 
+
+async def _chat_completion(
+    messages: list[dict],
+    *,
+    temperature: float = 0.5,
+    max_tokens: int = 200,
+    response_format: dict | None = None,
+) -> str:
+    """
+    Try OpenAI first (unless its key is known-broken). Falls back to Groq on any failure.
+    After a 401 from OpenAI, skips OpenAI for the rest of the process to avoid wasted latency.
+    """
+    global _openai_auth_broken
+
+    kwargs: dict = {
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    if response_format:
+        kwargs["response_format"] = response_format
+
+    # ── 1. OpenAI (skipped if key is known-invalid) ───────────────────────────
+    if settings.OPENAI_API_KEY and not settings.MOCK_SERVICES and not _openai_auth_broken:
+        try:
+            start = time.perf_counter()
+            client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+            resp = await client.chat.completions.create(model=settings.OPENAI_MODEL, **kwargs)
+            AI_LATENCY_SECONDS.observe(max(time.perf_counter() - start, 0.0))
+            text = (resp.choices[0].message.content or "").strip()
+            if text:
+                return text
+        except Exception as exc:
+            if _is_auth_error(exc):
+                _openai_auth_broken = True
+                logger.warning("OpenAI API key is invalid — switching to Groq for this session")
+            else:
+                logger.warning(f"OpenAI failed, trying Groq: {exc}")
+
+    # ── 2. Groq (OpenAI-compatible, ultra-fast Llama) ─────────────────────────
+    if settings.GROQ_API_KEY:
+        try:
+            start = time.perf_counter()
+            groq = AsyncOpenAI(
+                api_key=settings.GROQ_API_KEY,
+                base_url="https://api.groq.com/openai/v1",
+            )
+            # Groq does not support response_format — strip it
+            groq_kwargs = {k: v for k, v in kwargs.items() if k != "response_format"}
+            resp = await groq.chat.completions.create(model=settings.GROQ_MODEL, **groq_kwargs)
+            AI_LATENCY_SECONDS.observe(max(time.perf_counter() - start, 0.0))
+            text = (resp.choices[0].message.content or "").strip()
+            if text:
+                logger.info("Groq succeeded")
+                return text
+        except Exception as exc:
+            logger.warning(f"Groq failed: {exc}")
+
+    raise RuntimeError("Both OpenAI and Groq are unavailable")
+
+
+# ── generate_screening_questions ─────────────────────────────────────────────
 
 async def generate_screening_questions(
     *,
@@ -44,67 +108,55 @@ async def generate_screening_questions(
     }
     key = _cache_key("screening_questions", cache_payload)
     cached = await cache_get_json(key)
-    if isinstance(cached, list) and len(cached) >= 3:
+    if isinstance(cached, list) and len(cached) >= 1:
         return [str(item) for item in cached[:3]]
 
-    if settings.MOCK_SERVICES or not settings.OPENAI_API_KEY:
-        fallback = _fallback_questions(full_name, job_role, years_experience)
-        await cache_set_json(key, fallback, ttl_seconds=settings.REDIS_TTL)
-        return fallback
+    first_name = full_name.split()[0] if full_name else full_name
+    exp_text = f"{years_experience:g} years" if years_experience else None
+    role = job_role or interest or "Software Developer"
 
-    client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
-    prompt = {
+    system = (
+        "You are a warm and conversational HR screening specialist. "
+        "Generate exactly 3 interview screening questions for this specific candidate. "
+        "\nRULES:\n"
+        "- Questions must be SPECIFIC to their exact role and experience — not generic.\n"
+        f"- For a {role} role, ask about real technologies, actual challenges, and concrete outcomes they've worked on.\n"
+        "- Reference their experience level naturally in the questions.\n"
+        "- Each question should feel like it could ONLY be asked to this specific candidate.\n"
+        "- Do NOT ask: 'What are your strengths?', 'Tell me about yourself', 'What are your top skills?'\n"
+        "- Keep each question under 30 words and conversational — like a real human interviewer.\n"
+        "- Return only the 3 questions, one per line, no numbers or bullets."
+    )
+    user = json.dumps({
+        "first_name": first_name,
         "full_name": full_name,
         "email": email,
         "phone": phone,
-        "job_role": job_role,
-        "years_experience": years_experience,
+        "job_role": role,
+        "years_experience": exp_text,
         "interest": interest,
-    }
+    })
 
     try:
-        start = time.perf_counter()
-        response = await client.chat.completions.create(
-            model=settings.OPENAI_MODEL,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "Generate exactly 3 interview screening questions for a candidate lead. Keep each question concise and specific to role and experience.",
-                },
-                {"role": "user", "content": json.dumps(prompt)},
-            ],
-            temperature=0.4,
-            max_tokens=220,
+        text = await _chat_completion(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            temperature=0.72,
+            max_tokens=280,
         )
-        text = (response.choices[0].message.content or "").strip()
-        AI_LATENCY_SECONDS.observe(max(time.perf_counter() - start, 0.0))
-        questions = [line.strip(" -1234567890.") for line in text.splitlines() if line.strip()]
-        questions = [q for q in questions if len(q) > 8][:3]
-    except Exception:
-        fallback = _fallback_questions(full_name, job_role, years_experience)
-        await cache_set_json(key, fallback, ttl_seconds=settings.REDIS_TTL)
-        return fallback
+        questions = [line.strip(" -•1234567890.)") for line in text.splitlines() if line.strip()]
+        questions = [q for q in questions if len(q) > 10][:3]
+        if questions:
+            await cache_set_json(key, questions, ttl_seconds=settings.REDIS_TTL)
+            return questions
+    except Exception as exc:
+        logger.error(f"generate_screening_questions: all AI providers failed: {exc}")
 
-    if len(questions) < 3:
-        fallback = _fallback_questions(full_name, job_role, years_experience)
-        await cache_set_json(key, fallback, ttl_seconds=settings.REDIS_TTL)
-        return fallback
-    await cache_set_json(key, questions, ttl_seconds=settings.REDIS_TTL)
-    return questions
+    # Absolute last resort — minimal non-question text so caller doesn't crash
+    minimal = [f"Hi {first_name}, can you briefly describe your background in {role}?"]
+    return minimal
 
 
-def _fallback_messages(full_name: str, role: Optional[str], answers: list[str]) -> tuple[str, str]:
-    position = role or "your preferred role"
-    condensed = "; ".join(a.strip() for a in answers[:2] if a.strip())
-    sms = f"Hi {full_name}, thanks for your responses for {position}. We reviewed: {condensed[:110]}. Our team will contact you with next steps."
-    email = (
-        f"Hello {full_name},\n\n"
-        f"Thank you for completing your AI screening for {position}. "
-        f"We have recorded your responses and our team will review your profile shortly.\n\n"
-        "Regards,\nSkill Lab Admissions"
-    )
-    return sms, email
-
+# ── generate_followup_messages ────────────────────────────────────────────────
 
 async def generate_followup_messages(
     *,
@@ -126,55 +178,48 @@ async def generate_followup_messages(
     if isinstance(cached, dict) and cached.get("sms") and cached.get("email"):
         return str(cached["sms"]), str(cached["email"])
 
-    if settings.MOCK_SERVICES or not settings.OPENAI_API_KEY:
-        sms, email_msg = _fallback_messages(full_name, job_role, answers)
-        await cache_set_json(key, {"sms": sms, "email": email_msg}, ttl_seconds=settings.REDIS_TTL)
-        return sms, email_msg
+    first_name = full_name.split()[0] if full_name else full_name
+    position = job_role or "the role"
+    transcript = "\n".join(f"Response {i + 1}: {a}" for i, a in enumerate(answers) if a.strip())
 
-    client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
-    prompt = {
-        "full_name": full_name,
+    system = (
+        "You are a hiring specialist. Read the candidate's screening transcript and write two personalised follow-up messages.\n"
+        "SMS: Under 190 characters. Warm, specific — mention ONE concrete thing they said. End with next step.\n"
+        "Email: Under 90 words. Human, not a template. Reference something specific. Make them feel seen.\n"
+        "Return JSON: {\"sms\": \"...\", \"email\": \"...\"}"
+    )
+    user = json.dumps({
+        "candidate_name": full_name,
+        "first_name": first_name,
         "email": email,
         "phone": phone,
-        "job_role": job_role,
+        "job_role": position,
         "years_experience": years_experience,
-        "answers": answers,
-    }
+        "screening_transcript": transcript,
+    })
 
     try:
-        start = time.perf_counter()
-        response = await client.chat.completions.create(
-            model=settings.OPENAI_MODEL,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "Generate two outputs for candidate follow-up: 1) SMS under 220 chars, 2) professional email under 120 words. Return as JSON with keys sms and email.",
-                },
-                {"role": "user", "content": json.dumps(prompt)},
-            ],
+        text = await _chat_completion(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
             temperature=0.5,
-            max_tokens=280,
+            max_tokens=320,
+            response_format={"type": "json_object"},
         )
-        content = (response.choices[0].message.content or "").strip()
-        AI_LATENCY_SECONDS.observe(max(time.perf_counter() - start, 0.0))
-        try:
-            parsed = json.loads(content)
-            sms = str(parsed.get("sms", "")).strip()
-            email_msg = str(parsed.get("email", "")).strip()
-            if sms and email_msg:
-                await cache_set_json(key, {"sms": sms, "email": email_msg}, ttl_seconds=settings.REDIS_TTL)
-                return sms, email_msg
-        except Exception:
-            pass
-    except Exception:
-        sms, email_msg = _fallback_messages(full_name, job_role, answers)
-        await cache_set_json(key, {"sms": sms, "email": email_msg}, ttl_seconds=settings.REDIS_TTL)
-        return sms, email_msg
+        parsed = json.loads(text)
+        sms = str(parsed.get("sms", "")).strip()
+        email_msg = str(parsed.get("email", "")).strip()
+        if sms and email_msg:
+            await cache_set_json(key, {"sms": sms, "email": email_msg}, ttl_seconds=settings.REDIS_TTL)
+            return sms, email_msg
+    except Exception as exc:
+        logger.error(f"generate_followup_messages: all AI providers failed: {exc}")
 
-    sms, email_msg = _fallback_messages(full_name, job_role, answers)
-    await cache_set_json(key, {"sms": sms, "email": email_msg}, ttl_seconds=settings.REDIS_TTL)
+    sms = f"Hi {first_name}, thank you for your screening for {position}. Our team will review your responses and reach out shortly!"
+    email_msg = f"Hello {full_name},\n\nThank you for completing your screening for {position}. Our team will be in touch soon.\n\nBest regards,\n{settings.COMPANY_DESCRIPTION[:20] if settings.COMPANY_DESCRIPTION else 'Our Team'}"
     return sms, email_msg
 
+
+# ── generate_call_opening ─────────────────────────────────────────────────────
 
 async def generate_call_opening(
     *,
@@ -183,39 +228,35 @@ async def generate_call_opening(
     job_role: Optional[str],
     years_experience: Optional[float],
 ) -> str:
-    if settings.MOCK_SERVICES or not settings.OPENAI_API_KEY:
-        role = job_role or interest or "your profile"
-        return f"Hi {full_name}, this is Skill Lab AI assistant calling about {role}. Is this a good time for a 2-minute qualification chat?"
+    role = job_role or interest or "your interest"
+    first_name = full_name.split()[0] if full_name else full_name
 
-    client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+    system = (
+        "You are a warm outbound sales representative on a live phone call. "
+        "Generate ONE natural opening line to start the conversation. "
+        "Greet by first name, mention the role/interest in one sentence, then ask if it's a good time. "
+        "Under 30 words. Sound human, not scripted."
+    )
+    user = json.dumps({
+        "first_name": first_name,
+        "full_name": full_name,
+        "interest": interest,
+        "job_role": job_role,
+        "years_experience": years_experience,
+    })
+
     try:
-        response = await client.chat.completions.create(
-            model=settings.OPENAI_MODEL,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "Create one natural outbound call opening line for a lead. Keep it under 35 words.",
-                },
-                {
-                    "role": "user",
-                    "content": json.dumps(
-                        {
-                            "full_name": full_name,
-                            "interest": interest,
-                            "job_role": job_role,
-                            "years_experience": years_experience,
-                        }
-                    ),
-                },
-            ],
+        return await _chat_completion(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
             temperature=0.6,
-            max_tokens=90,
+            max_tokens=80,
         )
-        return (response.choices[0].message.content or "").strip()
-    except Exception:
-        role = job_role or interest or "your profile"
-        return f"Hi {full_name}, this is Skill Lab AI assistant calling about {role}. Is this a good time for a 2-minute qualification chat?"
+    except Exception as exc:
+        logger.error(f"generate_call_opening failed: {exc}")
+        return f"Hi {first_name}, I'm calling about your interest in {role}. Is this a good time to talk?"
 
+
+# ── generate_sales_call_turn ──────────────────────────────────────────────────
 
 async def generate_sales_call_turn(
     *,
@@ -230,114 +271,67 @@ async def generate_sales_call_turn(
     prior_answers: Optional[list[str]] = None,
     prior_questions: Optional[list[str]] = None,
     closing: bool = False,
+    company_description: Optional[str] = None,
 ) -> str:
-    # Build conversation history context
     history_context = ""
     if prior_questions and prior_answers:
-        history_lines = []
+        lines = []
         for q, a in zip(prior_questions, prior_answers):
-            history_lines.append(f"  - You asked: {q}")
-            history_lines.append(f"    Lead answered: {a}")
-        history_context = "CONVERSATION SO FAR:\n" + "\n".join(history_lines)
+            lines.append(f"  You asked: {q}")
+            lines.append(f"  Lead said: {a}")
+        history_context = "CONVERSATION SO FAR:\n" + "\n".join(lines)
 
-    # Build lead profile context
-    lead_context_parts = []
+    lead_parts = []
     if interest:
-        lead_context_parts.append(f"Interest: {interest}")
+        lead_parts.append(f"Interest: {interest}")
     if job_role:
-        lead_context_parts.append(f"Job Role: {job_role}")
+        lead_parts.append(f"Role: {job_role}")
     if lead_description:
-        lead_context_parts.append(f"Lead Background: {lead_description}")
-    lead_context = "\n".join(lead_context_parts) if lead_context_parts else "No additional lead info available."
+        lead_parts.append(f"Background: {lead_description}")
+    lead_context = "\n".join(lead_parts) or "No extra lead info."
 
-    system_prompt = (
-        f"You are {caller_name}, a professional sales executive at {company_name}, on a live phone call with {full_name}. "
-        "## IDENTITY: "
-        "Speak like a real, warm, human sales rep. Never sound scripted or robotic. "
-        "Do NOT reveal you are an AI or a bot under any circumstances. "
-        f"If asked who you are, say you are a sales representative from {company_name}. "
-        "## YOUR ONLY GOAL: "
-        "Your sole purpose on this call is to confirm the lead's interest and book a demo/discussion slot. "
-        "Do NOT ask about project details, required features, technical needs, outcomes, experience, or portfolio. "
-        "Do NOT ask anything beyond: confirming interest, getting a preferred date/time, and wrapping up. "
-        "Keep the call short, friendly, and focused on booking only. "
-        "## RESPONSE STYLE: "
-        "Keep every response under 40 words. "
-        "Always acknowledge what the lead just said in one short natural sentence first. "
-        "Then either confirm the booking, ask the next question, or close the call. "
-        "Never send incomplete or broken sentences. "
-        "## HANDLING LEAD QUESTIONS: "
-        f"If the lead asks about the course, product, or service ({interest or 'the offering'}), "
-        f"give a one-line answer like: 'Our team at {company_name} will walk you through all the details in the demo session.' "
-        "Then immediately redirect to booking. "
-        "Do not attempt to explain features, syllabus, curriculum, pricing, or duration in detail. "
-        "## HANDLING SKIP / COMPLAINTS / FRUSTRATION: "
-        "If the lead says 'skip', 'next', 'I don't want to answer', 'these are unwanted questions', or sounds frustrated, "
-        "immediately apologize briefly, stop asking questions, and move to confirm the booking or close. "
-        "Example: 'Apologies for that! Let me keep this quick, we'll cover everything in the demo itself.' "
-        "## BOOKING CONFIRMATION: "
-        "If the lead gives a date or time, confirm it immediately and warmly. "
-        f"Example: 'Perfect! I've noted that. Our team at {company_name} will connect with you at that time.' "
-        "Do not ask any more questions after a time is confirmed. Move to closing. "
-        "## CLOSING: "
-        f"{'Since closing is true: ' if closing else ''}"
-        f"Thank {full_name} by name, confirm what was agreed (date/time if given), and end warmly. "
-        f"Example: 'Thank you so much, {full_name}! Our team at {company_name} will connect with you soon. Have a great day!' "
+    company_section = (
+        f"## COMPANY INFO (answer ONLY from this, never invent):\n{company_description}\n\n"
+        if company_description and company_description.strip()
+        else ""
     )
 
-    user_prompt = (
+    system = (
+        f"You are {caller_name}, a professional sales executive at {company_name}, on a live phone call with {full_name}. "
+        "Speak like a real, warm human — never robotic or scripted. Do NOT reveal you are an AI. "
+        f"If asked who you are, say you are a sales rep from {company_name}.\n\n"
+        f"{company_section}"
+        "GOAL: answer the lead's questions from company info, confirm interest, and book a demo slot.\n"
+        "STYLE: Under 45 words. Short natural sentences. Always acknowledge what they said first.\n"
+        "ANSWERING: Use ONLY the Company Info above for course/fee/duration questions. "
+        f"If not in company info, say 'Our team at {company_name} will cover that in the demo.'\n"
+        "BOOKING: If they give a date/time, confirm it immediately and close.\n"
+        f"CLOSING: Thank {full_name} by name, confirm what was agreed, end warmly."
+    )
+
+    user = (
         f"LEAD PROFILE:\n{lead_context}\n\n"
         f"{history_context}\n\n"
-        f"LEAD'S LATEST RESPONSE: \"{latest_candidate_response}\"\n\n"
-        f"NEXT QUESTION TO ASK (only if still needed): {next_question or 'None - proceed to confirm booking or close.'}\n\n"
-        f"CLOSING THIS CALL: {'Yes - thank the lead and end the call.' if closing else 'No - keep moving forward.'}\n\n"
-        "Now respond as the sales executive. Acknowledge the lead's response first, then act accordingly. "
-        "Do not ask unnecessary questions. Keep it under 40 words."
+        f"LEAD JUST SAID: \"{latest_candidate_response}\"\n\n"
+        f"NEXT QUESTION (only if needed): {next_question or 'None — confirm booking or close.'}\n"
+        f"CLOSING NOW: {'Yes' if closing else 'No'}\n\n"
+        "Respond as the sales exec. Acknowledge first, then act. Under 40 words."
     )
 
-    if settings.MOCK_SERVICES or not settings.OPENAI_API_KEY:
-        return _sales_turn_fallback(full_name, company_name, latest_candidate_response, next_question, closing)
-
-    client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
     try:
-        response = await client.chat.completions.create(
-            model=settings.OPENAI_MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
+        return await _chat_completion(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
             temperature=0.5,
             max_tokens=150,
         )
-        result = (response.choices[0].message.content or "").strip()
-        return result if result else _sales_turn_fallback(full_name, company_name, latest_candidate_response, next_question, closing)
-    except Exception:
-        return _sales_turn_fallback(full_name, company_name, latest_candidate_response, next_question, closing)
+    except Exception as exc:
+        logger.error(f"generate_sales_call_turn failed: {exc}")
+        if closing:
+            return f"Thank you so much, {full_name}! Our team at {company_name} will be in touch shortly. Have a great day!"
+        return f"Got it. {next_question or f'Our team at {company_name} will reach out with the next steps.'}"
 
 
-def _sales_turn_fallback(
-    full_name: str,
-    company_name: str,
-    latest_response: str,
-    next_question: Optional[str],
-    closing: bool,
-) -> str:
-    if closing:
-        return f"Thank you so much, {full_name}! Our team at {company_name} will be in touch with you shortly. Have a great day!"
-
-    raw = (latest_response or "").lower()
-    info_keywords = ["what", "how", "fees", "cost", "syllabus", "curriculum", "duration", "explain", "tell me"]
-    skip_keywords = ["skip", "next", "unwanted", "don't want", "not required", "move on"]
-
-    if any(k in raw for k in skip_keywords):
-        return f"Apologies for that, {full_name}! Our team at {company_name} will cover everything in the session itself. Talk soon!"
-
-    if any(k in raw for k in info_keywords):
-        return f"Great question! Our team at {company_name} will walk you through all the details in the demo. {next_question or ''}".strip()
-
-    bridge = "Got it." if len(raw) < 10 else "Thanks for sharing."
-    return f"{bridge} {next_question or f'Our team at {company_name} will be in touch shortly.'}".strip()
-
+# ── generate_dynamic_next_question ───────────────────────────────────────────
 
 async def generate_dynamic_next_question(
     *,
@@ -350,74 +344,39 @@ async def generate_dynamic_next_question(
     prior_answers: Optional[list[str]] = None,
     prior_questions: Optional[list[str]] = None,
 ) -> str:
-    fallback = "What date and time would be convenient for a discussion with our team?"
-
-    if settings.MOCK_SERVICES or not settings.OPENAI_API_KEY:
-        return fallback
-
-    client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
-    payload = {
+    system = (
+        f"You are {caller_name} from {company_name} on a live sales call. "
+        "Generate ONE concise next question (max 20 words) to move the conversation forward. "
+        "Base it DIRECTLY on what the lead just said — it must feel like a natural follow-up to THEIR response. "
+        "Never repeat a question from prior_questions. "
+        "Prioritise: scheduling the demo, understanding their timeline, confirming their preferred slot. "
+        "Return the question only — plain text, no explanation."
+    )
+    user = json.dumps({
         "company_name": company_name,
         "caller_name": caller_name,
         "interest": interest,
         "job_role": job_role,
         "lead_description": lead_description,
-        "latest_candidate_response": latest_candidate_response,
+        "latest_response": latest_candidate_response,
         "prior_answers": prior_answers or [],
         "prior_questions": prior_questions or [],
-    }
-
-    system_prompt = (
-        f"You are {caller_name} from {company_name} on a live lead call. "
-        "Generate exactly ONE concise next question (max 20 words) to move the call forward. "
-        "The first greeting/interest question is already done, so do not ask consent again. "
-        "Use interest and lead_description context to ask relevant follow-ups. "
-        "Never repeat questions from prior_questions. "
-        "Do not ask interview-style questions like projects, years of experience, or portfolio. "
-        "Prioritize clarity on schedule, goals, preferred focus areas, and next steps. "
-        "Return plain text question only."
-    )
+    })
 
     try:
-        response = await client.chat.completions.create(
-            model=settings.OPENAI_MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": json.dumps(payload)},
-            ],
+        text = await _chat_completion(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
             temperature=0.5,
             max_tokens=80,
         )
-        text = (response.choices[0].message.content or "").strip()
-        if text:
-            return text.rstrip(".") + "?" if "?" not in text else text
-    except Exception:
-        pass
-
-    return fallback
+        q = text.strip().rstrip(".")
+        return q + "?" if "?" not in q else q
+    except Exception as exc:
+        logger.error(f"generate_dynamic_next_question failed: {exc}")
+        return "What date and time works best for you to connect with our team?"
 
 
-def _fallback_sales_cross_questions(
-    *,
-    asked_question: str,
-    candidate_response: str,
-    max_questions: int,
-) -> list[str]:
-    _ = asked_question
-    response = (candidate_response or "").strip().lower()
-    defaults = [
-        "Could you share one practical example related to that?",
-        "What outcome are you expecting from this demo?",
-        "What is your preferred timeline to start after the demo?",
-    ]
-    if any(word in response for word in ["fresher", "no experience", "beginner"]):
-        defaults = [
-            "Thanks for sharing. What specific skills would you like to build first?",
-            "Are you looking for beginner-friendly guidance during the demo?",
-            "What is your preferred learning pace: weekday or weekend?",
-        ]
-    return defaults[: max(1, min(max_questions, 3))]
-
+# ── generate_sales_cross_questions ────────────────────────────────────────────
 
 async def generate_sales_cross_questions(
     *,
@@ -430,15 +389,16 @@ async def generate_sales_cross_questions(
     max_questions: int = 2,
 ) -> list[str]:
     max_questions = max(1, min(max_questions, 3))
-    if settings.MOCK_SERVICES or not settings.OPENAI_API_KEY:
-        return _fallback_sales_cross_questions(
-            asked_question=asked_question,
-            candidate_response=candidate_response,
-            max_questions=max_questions,
-        )
 
-    client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
-    payload = {
+    system = (
+        f"You are {caller_name} from {company_name} on a live sales call. "
+        f"The lead just answered: \"{candidate_response}\"\n"
+        f"Generate {max_questions} short follow-up cross-questions (max 20 words each) based ONLY on what they said. "
+        "Each question must feel like a natural continuation of their specific answer. "
+        "Help qualify their timeline, goals, or readiness for the demo. "
+        f"Return a JSON array of exactly {max_questions} question strings. No explanations."
+    )
+    user = json.dumps({
         "company_name": company_name,
         "caller_name": caller_name,
         "interest": interest,
@@ -446,37 +406,53 @@ async def generate_sales_cross_questions(
         "asked_question": asked_question,
         "candidate_response": candidate_response,
         "max_questions": max_questions,
-    }
-
-    system_prompt = (
-        "Generate follow-up cross-questions for a live sales call. "
-        "Return ONLY a JSON array of strings with 2 or 3 concise questions. "
-        "Questions must be context-aware from candidate response and should help qualification or scheduling. "
-        "No numbering, no explanations."
-    )
+    })
 
     try:
-        response = await client.chat.completions.create(
-            model=settings.OPENAI_MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": json.dumps(payload)},
-            ],
-            temperature=0.5,
+        text = await _chat_completion(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            temperature=0.55,
+            max_tokens=180,
+            response_format={"type": "json_object"},
+        )
+        parsed = json.loads(text)
+        # Handle both {"questions": [...]} and plain [...] responses
+        if isinstance(parsed, list):
+            questions = parsed
+        elif isinstance(parsed, dict):
+            questions = next(
+                (v for v in parsed.values() if isinstance(v, list)),
+                [],
+            )
+        else:
+            questions = []
+        questions = [str(q).strip() for q in questions if str(q).strip() and len(str(q)) >= 8][:max_questions]
+        if questions:
+            return questions
+    except Exception as exc:
+        logger.error(f"generate_sales_cross_questions failed: {exc}")
+
+    # Groq failed too — try without response_format (Groq limitation workaround)
+    try:
+        text = await _chat_completion(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            temperature=0.55,
             max_tokens=180,
         )
-        content = (response.choices[0].message.content or "").strip()
-        parsed = json.loads(content)
-        if isinstance(parsed, list):
-            questions = [str(item).strip() for item in parsed if str(item).strip()]
-            questions = [q for q in questions if len(q) >= 8][:max_questions]
+        # Try to parse JSON from plain text response
+        start = text.find("[")
+        end = text.rfind("]") + 1
+        if start >= 0 and end > start:
+            questions = json.loads(text[start:end])
+            questions = [str(q).strip() for q in questions if str(q).strip() and len(str(q)) >= 8][:max_questions]
             if questions:
                 return questions
-    except Exception:
-        pass
+        # Fallback: split by newline and clean up
+        lines = [line.strip(" -•1234567890.)\"'") for line in text.splitlines() if line.strip()]
+        questions = [l for l in lines if len(l) > 8][:max_questions]
+        if questions:
+            return questions
+    except Exception as exc2:
+        logger.error(f"generate_sales_cross_questions plain-text parse also failed: {exc2}")
 
-    return _fallback_sales_cross_questions(
-        asked_question=asked_question,
-        candidate_response=candidate_response,
-        max_questions=max_questions,
-    )
+    return [f"Could you tell me more about your availability for a demo with {company_name}?"]

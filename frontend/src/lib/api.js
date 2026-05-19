@@ -33,8 +33,13 @@ api.interceptors.response.use(
     const original = error.config;
     if (error.response?.status === 401 && !original._retry) {
       original._retry = true;
+      const refresh_token = localStorage.getItem('refresh_token');
+      if (!refresh_token) {
+        localStorage.clear();
+        window.location.href = '/login';
+        return Promise.reject(error);
+      }
       try {
-        const refresh_token = localStorage.getItem('refresh_token');
         const { data } = await axios.post(
           `${BASE_URL}/auth/refresh`,
           { refresh_token },

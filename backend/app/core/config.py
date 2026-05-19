@@ -40,12 +40,20 @@ class Settings(BaseSettings):
     JWT_REFRESH_EXPIRES_DAYS: int = 7
 
     # ── CORS ──────────────────────────────────────────────────
-    ALLOWED_ORIGINS: List[str] = ["http://localhost:5173", "http://localhost:3000"]
+    ALLOWED_ORIGINS: List[str] = Field(
+        default=["http://localhost:5173", "https://localhost:5173", "http://localhost:3000"],
+        env="ALLOWED_ORIGINS",
+    )
 
     # ── AI / Integrations ─────────────────────────────────────
     OPENAI_API_KEY: str = Field("", env="OPENAI_API_KEY")
     OPENAI_MODEL: str = Field("gpt-4o-mini", env="OPENAI_MODEL")
     OPENAI_EMBEDDING_MODEL: str = Field("text-embedding-3-small", env="OPENAI_EMBEDDING_MODEL")
+    OPENAI_TTS_MODEL: str = Field("tts-1", env="OPENAI_TTS_MODEL")
+    OPENAI_TTS_VOICE: str = Field("nova", env="OPENAI_TTS_VOICE")
+    COMPANY_DESCRIPTION: str = Field("", env="COMPANY_DESCRIPTION")
+    GROQ_API_KEY: str = Field("", env="GROQ_API_KEY")
+    GROQ_MODEL: str = Field("llama-3.3-70b-versatile", env="GROQ_MODEL")
     ASSEMBLYAI_API_KEY: str = Field("", env="ASSEMBLYAI_API_KEY")
     ASSEMBLYAI_API_BASE_URL: str = Field("https://api.assemblyai.com/v2", env="ASSEMBLYAI_API_BASE_URL")
     ASSEMBLYAI_SPEECH_MODEL: str = Field("universal-2", env="ASSEMBLYAI_SPEECH_MODEL")

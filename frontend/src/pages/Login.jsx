@@ -5,8 +5,8 @@ import { toast } from 'react-hot-toast';
 import { Mail, Lock, LogIn } from 'lucide-react';
 
 export default function Login() {
-  const [email, setEmail] = useState('admin@phoneagent.ai');
-  const [password, setPassword] = useState('Password123!');
+  const [email, setEmail] = useState('admin@ifocussystec.in');
+  const [password, setPassword] = useState('Admin@123');
   const [loading, setLoading] = useState(false);
   const { login } = useAuth();
   const navigate = useNavigate();
@@ -92,7 +92,7 @@ export default function Login() {
 
         <div style={{ marginTop: '24px', textAlign: 'center' }}>
           <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
-            Demo: admin@phoneagent.ai / Password123!
+            admin@ifocussystec.in / Admin@123
           </p>
         </div>
       </div>

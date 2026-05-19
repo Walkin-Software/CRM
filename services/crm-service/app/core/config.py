@@ -17,7 +17,7 @@ class Settings(BaseSettings):
 
     # ── MySQL ─────────────────────────────────────────────────
     DATABASE_URL: str = Field(
-        "mysql+aiomysql://root:radhe123@localhost:3306/ai_phone_agent",
+        "mysql+aiomysql://root:root@localhost:3306/ai_phone_agent",
         env="DATABASE_URL"
     )
     DB_POOL_SIZE: int = Field(10, env="DB_POOL_SIZE")
@@ -38,10 +38,11 @@ class Settings(BaseSettings):
     # ── AI / Integrations ─────────────────────────────────────
     OPENAI_API_KEY: str = Field("", env="OPENAI_API_KEY")
     OPENAI_MODEL: str = Field("gpt-4o-mini", env="OPENAI_MODEL")
-    MOCK_SERVICES: bool = Field(True, env="MOCK_SERVICES")
+    MOCK_SERVICES: bool = Field(False, env="MOCK_SERVICES")
 
     class Config:
-        env_file = "../../.env"
+        # Try backend .env first (relative to CRM/services/crm-service/), then local .env
+        env_file = ["../../backend/.env", ".env"]
         env_file_encoding = "utf-8"
         case_sensitive = False
         extra = "ignore"

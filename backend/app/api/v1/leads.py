@@ -138,14 +138,19 @@ async def create_lead(
     await db.refresh(lead, ["assigned_user"])
     logger.info(f"Lead created: {lead.id} by user {current_user.id}")
 
+    # Serialize now while all attributes are loaded — the second commit below
+    # would expire them, causing a MissingGreenlet error on access.
+    lead_out = LeadOut.model_validate(lead, from_attributes=True)
+
     # ─── Automatic Triggers ──────────────────────────────────
     try:
         await trigger_lead_automation(db, lead)
         await db.commit()
     except Exception as e:
         logger.error(f"Failed to trigger automatic actions for lead {lead.id}: {e}")
+        await db.rollback()
 
-    return LeadOut.model_validate(lead, from_attributes=True)
+    return lead_out
 
 @router.post("/public", response_model=LeadOut, status_code=status.HTTP_201_CREATED)
 async def public_create_lead(
@@ -190,15 +195,17 @@ async def public_create_lead(
     db.add(lead)
     await db.commit()
     await db.refresh(lead)
-    
-    # Triggers
+
+    lead_out = LeadOut.model_validate(lead, from_attributes=True)
+
     try:
         await trigger_lead_automation(db, lead)
         await db.commit()
     except Exception as e:
         logger.error(f"Public trigger failed: {e}")
+        await db.rollback()
 
-    return LeadOut.model_validate(lead, from_attributes=True)
+    return lead_out
 @router.get("/{lead_id}", response_model=LeadOut)
 async def get_lead(
     lead_id: str,

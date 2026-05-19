@@ -9,6 +9,7 @@ import tempfile
 import audioop
 import json
 import certifi
+import uuid
 from fastapi import APIRouter, Depends, Query, BackgroundTasks, HTTPException, Form, Header, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -40,9 +41,9 @@ HANGUP_THRESHOLD_SECONDS = 5
 COMPANY_NAME = "Walkin Software"
 AI_CALLER_NAME = "Siri"
 MAX_NO_INPUT_RETRIES = 2
-MAX_CLARIFICATION_RETRIES_PER_QUESTION = 2
-MAX_TOTAL_CLARIFICATION_RETRIES = 4
-MAX_CROSS_QUESTIONS_PER_ANSWER = 0
+MAX_CLARIFICATION_RETRIES_PER_QUESTION = 3
+MAX_TOTAL_CLARIFICATION_RETRIES = 8
+MAX_CROSS_QUESTIONS_PER_ANSWER = 2
 
 
 def _verify_internal_token(token: str | None) -> None:
@@ -72,6 +73,18 @@ def _queue_retry_for_call(call: Call) -> None:
     metadata["retry_last_queued_at"] = datetime.now(timezone.utc).isoformat()
     metadata["retry_last_marker"] = retry_marker
     call.metadata_ = metadata
+
+
+def _e164(phone: str) -> str:
+    """Normalize a phone number to E.164 format, defaulting to +91 (India) for 10-digit numbers."""
+    digits = "".join(c for c in phone if c.isdigit())
+    if phone.startswith("+"):
+        return "+" + digits
+    if len(digits) == 10:
+        return "+91" + digits
+    if len(digits) == 12 and digits.startswith("91"):
+        return "+" + digits
+    return "+" + digits
 
 
 def _twilio_http_auth() -> tuple[str, str] | None:
@@ -172,7 +185,7 @@ async def _import_recent_twilio_calls(db: AsyncSession, client: TwilioClient, li
         return 0
 
     try:
-        twilio_calls = client.calls.list(limit=limit)
+        twilio_calls = await asyncio.to_thread(client.calls.list, limit=limit)
     except Exception:
         return 0
 
@@ -255,7 +268,20 @@ def _normalize_recording_url(recording_url: str | None) -> str | None:
     return url
 
 
+# Cached at startup by main.py lifespan — never blocks the event loop at call time.
+_NGROK_URL: str | None = None
+
+
+def set_ngrok_url(url: str | None) -> None:
+    global _NGROK_URL
+    _NGROK_URL = url
+    if url:
+        logger.info(f"ngrok webhook URL set: {url}")
+
+
 def _public_base_url() -> str:
+    if _NGROK_URL:
+        return _NGROK_URL
     base = (settings.TWILIO_WEBHOOK_URL or "").strip().rstrip("/")
     if base.endswith("/webhooks/twilio"):
         return base[: -len("/webhooks/twilio")]
@@ -401,33 +427,43 @@ def _sales_candidate_concern_reply(candidate_text: str) -> str | None:
 
 
 def _is_candidate_clarification_request(candidate_text: str) -> bool:
+    """Return True only when the response is primarily a clarification/question, not an answer.
+
+    Rules (checked in order, first match wins):
+    1. Empty → not clarification.
+    2. Affirmative response (yes/sure/ok) → always treat as an answer, even if "?" present.
+    3. Substantive response (≥8 words) with "?" → candidate answered AND asked a follow-up;
+       treat as answer so the AI can acknowledge their reply and address their question naturally.
+    4. Short response that is purely a question → true clarification.
+    5. Contains specific multi-word clarification phrases → true clarification.
+    """
     text = (candidate_text or "").strip().lower()
     if not text:
         return False
+    # Rule 2: affirmative overrides question mark
+    if _is_affirmative_interest(text):
+        return False
+    # Rule 3: long substantive response — treat as answer even if it ends with a question
+    if "?" in text and len(text.split()) >= 8:
+        return False
+    # Rule 4: short response that is a question
     if "?" in text:
         return True
-    clarification_markers = [
+    # Rule 5: specific multi-word clarification phrases only (no single keywords)
+    clarification_phrases = [
         "know more",
         "tell me more",
         "more info",
         "more information",
         "could you explain",
         "can you explain",
-        "what is",
-        "how much",
-        "fees",
-        "fee",
-        "cost",
-        "price",
-        "course",
-        "demo",
-        "duration",
-        "syllabus",
-        "curriculum",
-        "batch",
-        "timing",
+        "what is the",
+        "how much is",
+        "what about the",
+        "can you tell me",
+        "could you tell me",
     ]
-    return any(marker in text for marker in clarification_markers)
+    return any(phrase in text for phrase in clarification_phrases)
 
 
 def _is_affirmative_interest(candidate_text: str) -> bool:
@@ -535,9 +571,9 @@ def _build_gather_twiml(prompt: str) -> str:
         timeout=6,
         action_on_empty_result=True,
     )
-    gather.say(prompt, voice="alice")
+    gather.say(prompt, voice="Polly.Joanna")
     response.append(gather)
-    response.say("I did not receive a response. Please hold while I repeat the question.", voice="alice")
+    response.say("I did not receive a response. Please hold while I repeat the question.", voice="Polly.Joanna")
     response.redirect(_conversation_action_url(), method="POST")
     return str(response)
 
@@ -557,18 +593,97 @@ def _build_realtime_stream_twiml(fallback_prompt: str) -> str:
         timeout=6,
         action_on_empty_result=True,
     )
-    gather.say(fallback_prompt, voice="alice")
+    gather.say(fallback_prompt, voice="Polly.Joanna")
     response.append(gather)
-    response.say("I did not receive a response. Please hold while I repeat the question.", voice="alice")
+    response.say("I did not receive a response. Please hold while I repeat the question.", voice="Polly.Joanna")
     response.redirect(_conversation_action_url(), method="POST")
     return str(response)
 
 
 def _build_closing_twiml(message: str) -> str:
     response = VoiceResponse()
-    response.say(message, voice="alice")
+    response.say(message, voice="Polly.Joanna")
     response.hangup()
     return str(response)
+
+
+# ── OpenAI TTS — Realistic voice via pre-generated MP3 audio ──────────────────
+
+_tts_store: dict[str, bytes] = {}
+_tts_auth_broken = False  # circuit breaker: skip OpenAI TTS after first 401
+
+
+async def _generate_tts_audio(text: str) -> str | None:
+    """Generate realistic speech using OpenAI TTS. Returns a UUID key to retrieve the audio."""
+    global _tts_auth_broken
+    if settings.MOCK_SERVICES or not settings.OPENAI_API_KEY or _tts_auth_broken:
+        return None
+    try:
+        from openai import AsyncOpenAI as _AsyncOpenAI
+        _oa = _AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+        tts_resp = await _oa.audio.speech.create(
+            model=settings.OPENAI_TTS_MODEL,
+            voice=settings.OPENAI_TTS_VOICE,
+            input=text,
+            response_format="mp3",
+        )
+        audio_bytes = tts_resp.content
+        key = str(uuid.uuid4())
+        _tts_store[key] = audio_bytes
+        if len(_tts_store) > 300:
+            del _tts_store[next(iter(_tts_store))]
+        return key
+    except Exception as exc:
+        msg = str(exc).lower()
+        if "401" in msg or "invalid_api_key" in msg or "incorrect api key" in msg:
+            _tts_auth_broken = True
+            logger.warning("OpenAI TTS key invalid — using Polly voice for this session")
+        else:
+            logger.warning(f"OpenAI TTS failed, falling back to Polly voice: {exc}")
+        return None
+
+
+@router.get("/tts/{key}")
+async def serve_tts_audio(key: str):
+    """Serve a pre-generated TTS audio clip to Twilio's <Play> verb."""
+    audio = _tts_store.get(key)
+    if not audio:
+        raise HTTPException(status_code=404, detail="Audio not found or expired")
+    return Response(content=audio, media_type="audio/mpeg")
+
+
+async def _tts_gather_response(prompt: str) -> Response:
+    """Build a Gather TwiML response using OpenAI TTS when available, Polly as fallback."""
+    tts_key = await _generate_tts_audio(prompt)
+    vr = VoiceResponse()
+    gather = Gather(
+        input="speech",
+        action=_conversation_action_url(),
+        method="POST",
+        speech_timeout="auto",
+        timeout=6,
+        action_on_empty_result=True,
+    )
+    if tts_key:
+        gather.play(f"{_public_base_url()}/api/calls/tts/{tts_key}")
+    else:
+        gather.say(prompt, voice="Polly.Joanna")
+    vr.append(gather)
+    vr.say("I did not receive a response. Please hold while I repeat the question.", voice="Polly.Joanna")
+    vr.redirect(_conversation_action_url(), method="POST")
+    return Response(content=str(vr), media_type="application/xml")
+
+
+async def _tts_closing_response(message: str) -> Response:
+    """Build a closing TwiML response using OpenAI TTS when available, Polly as fallback."""
+    tts_key = await _generate_tts_audio(message)
+    vr = VoiceResponse()
+    if tts_key:
+        vr.play(f"{_public_base_url()}/api/calls/tts/{tts_key}")
+    else:
+        vr.say(message, voice="Polly.Joanna")
+    vr.hangup()
+    return Response(content=str(vr), media_type="application/xml")
 
 
 async def _append_conversation_message(
@@ -879,7 +994,7 @@ async def _sync_call_from_twilio(
         return False
 
     try:
-        tw_call = client.calls(call.twilio_call_sid).fetch()
+        tw_call = await asyncio.to_thread(client.calls(call.twilio_call_sid).fetch)
     except Exception:
         return False
 
@@ -911,7 +1026,9 @@ async def _sync_call_from_twilio(
     should_fetch_recording = (not call.recording_url) or force_transcribe or _is_placeholder_recording_url(call.recording_url)
     if should_fetch_recording:
         try:
-            recordings = client.recordings.list(call_sid=call.twilio_call_sid, limit=1)
+            recordings = await asyncio.to_thread(
+                client.recordings.list, call_sid=call.twilio_call_sid, limit=1
+            )
         except Exception:
             recordings = []
 
@@ -1015,29 +1132,30 @@ async def _refresh_recording_url_from_twilio(db: AsyncSession, call: Call) -> bo
 
     if call.recording_sid:
         try:
-            recording = client.recordings(call.recording_sid).fetch()
+            recording = await asyncio.to_thread(client.recordings(call.recording_sid).fetch)
         except Exception:
             recording = None
 
     if recording is None:
         candidate_call_sids = [call.twilio_call_sid]
         try:
-            tw_call = client.calls(call.twilio_call_sid).fetch()
+            tw_call = await asyncio.to_thread(client.calls(call.twilio_call_sid).fetch)
             parent_sid = getattr(tw_call, "parent_call_sid", None)
             if parent_sid and parent_sid not in candidate_call_sids:
                 candidate_call_sids.append(parent_sid)
-            child_calls = client.calls.list(parent_call_sid=call.twilio_call_sid, limit=20)
+            child_calls = await asyncio.to_thread(
+                client.calls.list, parent_call_sid=call.twilio_call_sid, limit=20
+            )
             for child in child_calls:
                 child_sid = getattr(child, "sid", None)
                 if child_sid and child_sid not in candidate_call_sids:
                     candidate_call_sids.append(child_sid)
         except Exception:
-            # Best-effort: keep fallback resilient even if Twilio call graph lookup fails.
             pass
 
         for sid in candidate_call_sids:
             try:
-                rows = client.recordings.list(call_sid=sid, limit=1)
+                rows = await asyncio.to_thread(client.recordings.list, call_sid=sid, limit=1)
                 if rows:
                     recording = rows[0]
                     break
@@ -1084,15 +1202,13 @@ async def list_calls(
     )
 
     if twilio_live_mode and page == 1:
-        client = TwilioClient(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
-        # Keep the first page fresh without making every paginated request expensive.
-        await _import_recent_twilio_calls(db, client, limit=min(max(page_size * 2, 20), 50))
+        try:
+            client = TwilioClient(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
+            await _import_recent_twilio_calls(db, client, limit=min(max(page_size * 2, 20), 50))
+        except Exception as exc:
+            logger.warning(f"Twilio import skipped: {exc}")
 
     query = select(Call)
-
-    # In Twilio live mode, show only Twilio-backed calls to avoid stale local/mock rows.
-    if twilio_live_mode:
-        query = query.where(Call.twilio_call_sid.is_not(None))
 
     if status:
         query = query.where(Call.status == status)
@@ -1111,25 +1227,25 @@ async def list_calls(
     result = await db.execute(query)
     calls = result.scalars().all()
 
-    # Keep DB history fresh even if Twilio webhook delivery is delayed/missed.
+    # Refresh the most recent calls only — syncing all page_size calls would make one
+    # blocking Twilio API call per row, easily timing out at page_size=100.
     if twilio_live_mode and page == 1:
-        client = TwilioClient(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
-        changed = False
-        for call in calls:
-            if not call.twilio_call_sid:
-                continue
-
-            # Always sync rows visible in UI so duration/status/recording stay aligned with Twilio logs.
-            changed = (await _sync_call_from_twilio(db, call, client)) or changed
-
-            if _is_answered_status(call.status) and (
-                not call.recording_url
-                or _is_placeholder_recording_url(call.recording_url)
-            ):
-                refreshed = await _refresh_recording_url_from_twilio(db, call)
-                changed = refreshed or changed
-        if changed:
-            await db.commit()
+        try:
+            client = TwilioClient(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
+            changed = False
+            recent_calls = [c for c in calls if c.twilio_call_sid][:5]
+            for call in recent_calls:
+                changed = (await _sync_call_from_twilio(db, call, client)) or changed
+                if _is_answered_status(call.status) and (
+                    not call.recording_url
+                    or _is_placeholder_recording_url(call.recording_url)
+                ):
+                    refreshed = await _refresh_recording_url_from_twilio(db, call)
+                    changed = refreshed or changed
+            if changed:
+                await db.commit()
+        except Exception as exc:
+            logger.warning(f"Twilio sync skipped: {exc}")
 
     return {
         "total": total,
@@ -1202,7 +1318,7 @@ async def outbound_call(
     if not lead:
         raise HTTPException(status_code=404, detail="Lead not found")
 
-    to_number = payload.to_number or lead.phone
+    to_number = _e164(payload.to_number or lead.phone)
     sales_questions = await _build_sales_call_questions(lead)
     initial_prompt = _initial_sales_prompt(
         lead,
@@ -1214,16 +1330,28 @@ async def outbound_call(
     provider_status = "initiated"
     provider = "mock"
 
-    if not settings.MOCK_SERVICES:
-        if not settings.TWILIO_ACCOUNT_SID or not settings.TWILIO_AUTH_TOKEN or not settings.TWILIO_PHONE_NUMBER:
-            raise HTTPException(status_code=500, detail="Twilio credentials are not configured.")
+    use_twilio = (
+        not settings.MOCK_SERVICES
+        and settings.TWILIO_ACCOUNT_SID
+        and settings.TWILIO_AUTH_TOKEN
+        and settings.TWILIO_PHONE_NUMBER
+    )
 
+    if use_twilio:
         try:
             client = TwilioClient(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
             base_url = _public_base_url()
-            # Use the Gather flow as the stable production path; follow-up turns are
-            # generated dynamically in the conversation webhook.
-            twiml_payload = _build_gather_twiml(initial_prompt)
+            tts_key = await _generate_tts_audio(initial_prompt)
+            if tts_key:
+                audio_url = f"{base_url}/api/calls/tts/{tts_key}"
+                _vr = VoiceResponse()
+                _g = Gather(input="speech", action=f"{base_url}/api/calls/webhooks/twilio/conversation", method="POST", speech_timeout="auto", timeout=6, action_on_empty_result=True)
+                _g.play(audio_url)
+                _vr.append(_g)
+                _vr.redirect(f"{base_url}/api/calls/webhooks/twilio/conversation", method="POST")
+                twiml_payload = str(_vr)
+            else:
+                twiml_payload = _build_gather_twiml(initial_prompt)
             twilio_call = client.calls.create(
                 to=to_number,
                 from_=settings.TWILIO_PHONE_NUMBER,
@@ -1238,15 +1366,12 @@ async def outbound_call(
             twilio_sid = twilio_call.sid
             provider_status = _normalize_call_status(twilio_call.status, 0)
             provider = "twilio"
-            logger.info(
-                f"Outbound call triggered sid={twilio_sid} lead_id={lead.id} to={to_number} "
-                f"mode=gather_ai"
-            )
+            logger.info(f"Outbound call triggered sid={twilio_sid} lead_id={lead.id} to={to_number}")
         except TwilioRestException as exc:
-            logger.error(f"Twilio outbound call failed lead_id={lead.id} to={to_number}: {exc.msg}")
-            raise HTTPException(status_code=502, detail=f"Twilio call failed: {exc.msg}")
-
-    if settings.MOCK_SERVICES:
+            logger.warning(f"Twilio failed for lead={lead.id}, falling back to mock: {exc.msg}")
+            provider_status = "answered"
+            provider = "mock"
+    else:
         provider_status = "answered"
 
     call = Call(
@@ -1336,7 +1461,7 @@ async def twilio_conversation_webhook(
         logger.info(f"Twilio conversation webhook sid={CallSid} speech={(SpeechResult or '').strip()!r}")
         call = (await db.execute(select(Call).where(Call.twilio_call_sid == CallSid))).scalar_one_or_none()
         if not call:
-            return Response(content=_build_closing_twiml("We could not locate this call session. Goodbye."), media_type="application/xml")
+            return await _tts_closing_response("We could not locate this call session. Goodbye.")
 
         lead = None
         if call.lead_id:
@@ -1384,7 +1509,7 @@ async def twilio_conversation_webhook(
                 state["completed_at"] = datetime.now(timezone.utc).isoformat()
                 _update_sales_call_state(call, state)
                 await db.commit()
-                return Response(content=_build_closing_twiml(closing_prompt), media_type="application/xml")
+                return await _tts_closing_response(closing_prompt)
 
             repeat_prompt = _sales_no_input_prompt(active_question, no_input_retries)
             await _append_conversation_message(
@@ -1398,7 +1523,7 @@ async def twilio_conversation_webhook(
             state["no_input_retries"] = no_input_retries + 1
             _update_sales_call_state(call, state)
             await db.commit()
-            return Response(content=_build_gather_twiml(repeat_prompt), media_type="application/xml")
+            return await _tts_gather_response(repeat_prompt)
 
         is_clarification = _is_candidate_clarification_request(speech_text)
         is_skip = _is_skip_request(speech_text)
@@ -1425,7 +1550,7 @@ async def twilio_conversation_webhook(
             state["no_input_retries"] = 0
             _update_sales_call_state(call, state)
             await db.commit()
-            return Response(content=_build_gather_twiml(repeat_prompt), media_type="application/xml")
+            return await _tts_gather_response(repeat_prompt)
 
         if is_skip:
             await _append_conversation_message(
@@ -1456,7 +1581,7 @@ async def twilio_conversation_webhook(
                     )
                     _update_sales_call_state(call, state)
                     await db.commit()
-                    return Response(content=_build_gather_twiml(next_prompt), media_type="application/xml")
+                    return await _tts_gather_response(next_prompt)
 
             # Move to next main question if available, otherwise close.
             if current_index >= len(questions) - 1:
@@ -1473,7 +1598,7 @@ async def twilio_conversation_webhook(
                 state["completed_at"] = datetime.now(timezone.utc).isoformat()
                 _update_sales_call_state(call, state)
                 await db.commit()
-                return Response(content=_build_closing_twiml(closing_prompt), media_type="application/xml")
+                return await _tts_closing_response(closing_prompt)
 
             next_index = current_index + 1
             next_main_question = await _resolve_next_main_question(
@@ -1499,7 +1624,7 @@ async def twilio_conversation_webhook(
             state["no_input_retries"] = 0
             _update_sales_call_state(call, state)
             await db.commit()
-            return Response(content=_build_gather_twiml(next_prompt), media_type="application/xml")
+            return await _tts_gather_response(next_prompt)
 
         await _append_conversation_message(
             db,
@@ -1554,6 +1679,7 @@ async def twilio_conversation_webhook(
                         prior_answers=answers[:-1],
                         prior_questions=asked_questions,
                         closing=False,
+                        company_description=settings.COMPANY_DESCRIPTION or None,
                     )
                     next_prompt = (generated_prompt or "").strip() or fallback_prompt
 
@@ -1572,7 +1698,7 @@ async def twilio_conversation_webhook(
                 state["no_input_retries"] = 0
                 _update_sales_call_state(call, state)
                 await db.commit()
-                return Response(content=_build_gather_twiml(next_prompt), media_type="application/xml")
+                return await _tts_gather_response(next_prompt)
 
             clarification_retries += 1
             total_clarifications += 1
@@ -1596,7 +1722,7 @@ async def twilio_conversation_webhook(
                 state["completed_at"] = datetime.now(timezone.utc).isoformat()
                 _update_sales_call_state(call, state)
                 await db.commit()
-                return Response(content=_build_closing_twiml(closing_prompt), media_type="application/xml")
+                return await _tts_closing_response(closing_prompt)
 
             fallback_prompt = (
                 "Thanks for your question. Based on current details, our team can clarify anything beyond this. "
@@ -1616,6 +1742,7 @@ async def twilio_conversation_webhook(
                     prior_answers=answers,
                     prior_questions=asked_questions,
                     closing=False,
+                    company_description=settings.COMPANY_DESCRIPTION or None,
                 )
                 next_prompt = (generated_prompt or "").strip() or fallback_prompt
 
@@ -1631,7 +1758,7 @@ async def twilio_conversation_webhook(
             _update_sales_call_state(call, state)
             await db.commit()
             logger.info(f"Twilio clarification reply sid={CallSid} prompt={next_prompt!r}")
-            return Response(content=_build_gather_twiml(next_prompt), media_type="application/xml")
+            return await _tts_gather_response(next_prompt)
 
         answers.append(speech_text)
         state["answers"] = answers
@@ -1659,6 +1786,7 @@ async def twilio_conversation_webhook(
                         prior_answers=answers[:-1],
                         prior_questions=asked_questions,
                         closing=False,
+                        company_description=settings.COMPANY_DESCRIPTION or None,
                     )
                     next_prompt = (generated_prompt or "").strip() or next_prompt
                 await _append_conversation_message(
@@ -1671,7 +1799,7 @@ async def twilio_conversation_webhook(
                 )
                 _update_sales_call_state(call, state)
                 await db.commit()
-                return Response(content=_build_gather_twiml(next_prompt), media_type="application/xml")
+                return await _tts_gather_response(next_prompt)
 
             # Cross-question sequence complete; now move to the next main round.
             if current_index >= len(questions) - 1:
@@ -1690,7 +1818,7 @@ async def twilio_conversation_webhook(
                 state["completed_at"] = datetime.now(timezone.utc).isoformat()
                 _update_sales_call_state(call, state)
                 await db.commit()
-                return Response(content=_build_closing_twiml(closing_prompt), media_type="application/xml")
+                return await _tts_closing_response(closing_prompt)
 
             next_index = current_index + 1
             next_main_question = await _resolve_next_main_question(
@@ -1715,6 +1843,7 @@ async def twilio_conversation_webhook(
                     prior_answers=answers[:-1],
                     prior_questions=asked_questions,
                     closing=False,
+                    company_description=settings.COMPANY_DESCRIPTION or None,
                 )
                 main_prompt = (generated_prompt or "").strip() or main_prompt
             await _append_conversation_message(
@@ -1730,7 +1859,7 @@ async def twilio_conversation_webhook(
             state["asked_questions"] = asked_questions
             _update_sales_call_state(call, state)
             await db.commit()
-            return Response(content=_build_gather_twiml(main_prompt), media_type="application/xml")
+            return await _tts_gather_response(main_prompt)
 
         # Answer to a main question: generate cross-questions dynamically from response.
         if MAX_CROSS_QUESTIONS_PER_ANSWER > 0 and current_index < len(questions) - 1 and _should_generate_cross_questions(questions[current_index], speech_text):
@@ -1760,6 +1889,7 @@ async def twilio_conversation_webhook(
                         prior_answers=answers[:-1],
                         prior_questions=asked_questions,
                         closing=False,
+                        company_description=settings.COMPANY_DESCRIPTION or None,
                     )
                     cross_prompt = (generated_prompt or "").strip() or cross_prompt
                 await _append_conversation_message(
@@ -1772,7 +1902,7 @@ async def twilio_conversation_webhook(
                 )
                 _update_sales_call_state(call, state)
                 await db.commit()
-                return Response(content=_build_gather_twiml(cross_prompt), media_type="application/xml")
+                return await _tts_gather_response(cross_prompt)
 
         if current_index >= len(questions) - 1:
             closing_prompt = _sales_closing_prompt()
@@ -1790,7 +1920,7 @@ async def twilio_conversation_webhook(
             state["completed_at"] = datetime.now(timezone.utc).isoformat()
             _update_sales_call_state(call, state)
             await db.commit()
-            return Response(content=_build_closing_twiml(closing_prompt), media_type="application/xml")
+            return await _tts_closing_response(closing_prompt)
 
         next_index = current_index + 1
         next_main_question = await _resolve_next_main_question(
@@ -1816,6 +1946,7 @@ async def twilio_conversation_webhook(
                 prior_answers=answers[:-1],
                 prior_questions=asked_questions,
                 closing=False,
+                company_description=settings.COMPANY_DESCRIPTION or None,
             )
             next_prompt = (generated_prompt or "").strip() or fallback_prompt
         await _append_conversation_message(
@@ -1832,14 +1963,11 @@ async def twilio_conversation_webhook(
         _update_sales_call_state(call, state)
         await db.commit()
         logger.info(f"Twilio conversation next prompt sid={CallSid} prompt={next_prompt!r}")
-        return Response(content=_build_gather_twiml(next_prompt), media_type="application/xml")
+        return await _tts_gather_response(next_prompt)
     except Exception:
         logger.exception(f"Twilio conversation webhook failed sid={CallSid}")
         # Always return valid TwiML so Twilio does not play an application error message.
-        return Response(
-            content=_build_closing_twiml("Thank you for your time. We will call you again shortly."),
-            media_type="application/xml",
-        )
+        return await _tts_closing_response("Thank you for your time. We will call you again shortly.")
 
 
 @router.websocket("/ws/media")
