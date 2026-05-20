@@ -131,3 +131,21 @@ def transcribe_call_recording(self, call_id: str):
     except Exception as exc:
         logger.error(f"transcribe_call_recording failed for call={call_id}: {exc}")
         raise self.retry(exc=exc)
+
+
+@celery_app.task
+def process_due_followups():
+    """Beat task: dispatch all follow-ups whose scheduled_at has passed."""
+    try:
+        response = requests.post(
+            f"{_base_url()}/api/leads/internal/process-followups",
+            headers=_headers(),
+            timeout=30,
+        )
+        response.raise_for_status()
+        result = response.json()
+        logger.info(f"process_due_followups: {result}")
+        return result
+    except Exception as exc:
+        logger.error(f"process_due_followups failed: {exc}")
+        return {"error": str(exc)}

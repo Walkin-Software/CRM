@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import smtplib
 from email.message import EmailMessage
 from fastapi import APIRouter, Depends, HTTPException, Form, Header
-from sqlalchemy import select, func
+from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from twilio.rest import Client as TwilioClient
 from twilio.base.exceptions import TwilioRestException
@@ -19,7 +19,7 @@ from app.schemas.schemas import (
     PaginatedResponse,
     NotificationOut,
 )
-from app.services.ai_content import generate_followup_messages
+from app.services.ai_content import generate_followup_messages, generate_whatsapp_reply
 from app.core.metrics import NOTIFICATION_SEND_TOTAL
 
 router = APIRouter()
@@ -335,6 +335,7 @@ async def twilio_inbound_message_webhook(
 ):
     from_number = _normalize_phone(From)
     channel = "whatsapp" if (From or "").startswith("whatsapp:") else "sms"
+    inbound_text = (Body or "").strip() or "(empty inbound message)"
 
     lead = None
     if from_number:
@@ -342,17 +343,84 @@ async def twilio_inbound_message_webhook(
             await db.execute(select(Lead).where(Lead.phone == from_number).limit(1))
         ).scalar_one_or_none()
 
-    notif = Notification(
+    # Save inbound message
+    inbound_notif = Notification(
         lead_id=lead.id if lead else None,
         channel=channel,
         recipient_phone=from_number or None,
-        content=(Body or "").strip() or "(empty inbound message)",
+        content=inbound_text,
         status="read",
         external_sid=MessageSid,
         sent_at=datetime.now(timezone.utc),
         delivered_at=datetime.now(timezone.utc),
     )
-    db.add(notif)
+    db.add(inbound_notif)
+    await db.flush()
+
+    # Build conversation history for context (last 20 messages with this lead)
+    history: list[dict] = []
+    if lead:
+        prior_rows = (
+            await db.execute(
+                select(Notification)
+                .where(Notification.lead_id == lead.id)
+                .where(Notification.channel == channel)
+                .order_by(Notification.created_at.desc())
+                .limit(20)
+            )
+        ).scalars().all()
+        for row in reversed(prior_rows):
+            role = "user" if row.status == "read" else "assistant"
+            history.append({"role": role, "content": row.content})
+
+    # Generate AI reply
+    reply_text: str | None = None
+    if not settings.MOCK_SERVICES and (settings.OPENAI_API_KEY or settings.GROQ_API_KEY):
+        try:
+            reply_text = await generate_whatsapp_reply(
+                lead_name=lead.full_name if lead else None,
+                company_name="Walkin Software",
+                company_description=settings.COMPANY_DESCRIPTION or None,
+                inbound_message=inbound_text,
+                conversation_history=history,
+            )
+        except Exception as exc:
+            from app.core.logger import logger
+            logger.warning(f"WhatsApp AI reply generation failed: {exc}")
+
+    if not reply_text:
+        name = lead.full_name.split()[0] if lead and lead.full_name else "there"
+        reply_text = (
+            f"Hi {name}! Thanks for your message. Our team will get back to you shortly. "
+            "Would you like to schedule a demo call?"
+        )
+
+    # Send the AI reply back via Twilio
+    reply_status, reply_sid, reply_error = "failed", None, None
+    if not settings.MOCK_SERVICES:
+        try:
+            to_number = from_number if not from_number.startswith("whatsapp:") else from_number
+            reply_sid_raw = _send_via_twilio(channel, to_number, reply_text)
+            reply_status, reply_sid = "sent", reply_sid_raw
+        except Exception as exc:
+            reply_error = str(exc)
+            from app.core.logger import logger
+            logger.warning(f"WhatsApp reply send failed from={from_number}: {exc}")
+    else:
+        reply_status = "sent"
+        reply_sid = f"mock-reply-{int(datetime.now(timezone.utc).timestamp())}"
+
+    reply_notif = Notification(
+        lead_id=lead.id if lead else None,
+        channel=channel,
+        recipient_phone=from_number or None,
+        content=reply_text,
+        status=reply_status,
+        external_sid=reply_sid,
+        error_message=reply_error,
+        sent_at=datetime.now(timezone.utc) if reply_status == "sent" else None,
+    )
+    db.add(reply_notif)
     await db.commit()
 
     return {
@@ -361,4 +429,5 @@ async def twilio_inbound_message_webhook(
         "channel": channel,
         "from": from_number,
         "to": _normalize_phone(To),
+        "ai_reply_sent": reply_status == "sent",
     }

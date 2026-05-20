@@ -78,6 +78,14 @@ class Settings(BaseSettings):
     TWILIO_WHATSAPP_NUMBER: str = Field("", env="TWILIO_WHATSAPP_NUMBER")
     TWILIO_WEBHOOK_URL: str = Field("", env="TWILIO_WEBHOOK_URL")
 
+    # ── Google Calendar / Meet ─────────────────────────────────
+    GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON: str = Field("", env="GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON")
+    GOOGLE_CALENDAR_ID: str = Field("primary", env="GOOGLE_CALENDAR_ID")
+
+    # ── Stripe ─────────────────────────────────────────────────
+    STRIPE_SECRET_KEY: str = Field("", env="STRIPE_SECRET_KEY")
+    STRIPE_WEBHOOK_SECRET: str = Field("", env="STRIPE_WEBHOOK_SECRET")
+
     # ── SMTP ───────────────────────────────────────────────────
     SMTP_HOST: str = Field("", env="SMTP_HOST")
     SMTP_PORT: int = Field(587, env="SMTP_PORT")

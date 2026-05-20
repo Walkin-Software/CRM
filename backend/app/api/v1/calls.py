@@ -1308,6 +1308,80 @@ async def schedule_call(
     }
 
 
+@router.post("/webhooks/twilio/voice")
+async def twilio_inbound_call_webhook(
+    CallSid: str = Form(...),
+    From: str = Form(...),
+    To: Optional[str] = Form(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """TwiML handler Twilio calls when someone dials the Twilio number inbound."""
+    from_number = _e164(From)
+
+    lead = (
+        await db.execute(select(Lead).where(Lead.phone == from_number).limit(1))
+    ).scalar_one_or_none()
+
+    questions = _fallback_sales_questions(_lead_interest_label(lead) if lead else "our services")
+    initial_prompt = (
+        _initial_sales_prompt(lead, questions[0])
+        if lead
+        else f"Hello, thank you for calling {COMPANY_NAME}. This is {AI_CALLER_NAME}. {questions[0]}"
+    )
+
+    call = Call(
+        twilio_call_sid=CallSid,
+        lead_id=lead.id if lead else None,
+        direction="inbound",
+        status="in_progress",
+        from_number=from_number,
+        to_number=To or settings.TWILIO_PHONE_NUMBER or "",
+        duration_seconds=0,
+        handled_by="ai",
+        metadata_={
+            "source": "twilio_inbound",
+            "provider": "twilio",
+            "sales_call_state": {
+                "questions": questions,
+                "answers": [],
+                "asked_questions": [questions[0]],
+                "current_question_index": 0,
+                "no_input_retries": 0,
+                "completed": False,
+                "company_name": COMPANY_NAME,
+                "caller_name": AI_CALLER_NAME,
+            },
+        },
+        started_at=datetime.now(timezone.utc),
+    )
+    db.add(call)
+    if lead and lead.status == "new":
+        lead.status = "contacted"
+    await db.commit()
+    await db.refresh(call)
+
+    await _append_conversation_message(
+        db, call, role="assistant", content=initial_prompt, intent="sales_question_1", confidence=1.0
+    )
+    await db.commit()
+    logger.info(f"Inbound call sid={CallSid} from={from_number} lead_id={lead.id if lead else None}")
+
+    if (
+        settings.REALTIME_CALLS_ENABLED
+        and settings.ASSEMBLYAI_API_KEY
+        and settings.ASSEMBLYAI_REALTIME_WS_URL
+    ):
+        return Response(
+            content=_build_realtime_stream_twiml(initial_prompt), media_type="application/xml"
+        )
+    return await _tts_gather_response(initial_prompt)
+
+
+@router.get("/webhooks/twilio/voice")
+async def twilio_inbound_call_webhook_probe():
+    return {"status": "ok", "endpoint": "twilio_voice", "method": "GET"}
+
+
 @router.post("/outbound")
 async def outbound_call(
     payload: OutboundCallRequest,
@@ -1341,17 +1415,26 @@ async def outbound_call(
         try:
             client = TwilioClient(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
             base_url = _public_base_url()
-            tts_key = await _generate_tts_audio(initial_prompt)
-            if tts_key:
-                audio_url = f"{base_url}/api/calls/tts/{tts_key}"
-                _vr = VoiceResponse()
-                _g = Gather(input="speech", action=f"{base_url}/api/calls/webhooks/twilio/conversation", method="POST", speech_timeout="auto", timeout=6, action_on_empty_result=True)
-                _g.play(audio_url)
-                _vr.append(_g)
-                _vr.redirect(f"{base_url}/api/calls/webhooks/twilio/conversation", method="POST")
-                twiml_payload = str(_vr)
+
+            use_realtime = (
+                settings.REALTIME_CALLS_ENABLED
+                and settings.ASSEMBLYAI_API_KEY
+                and settings.ASSEMBLYAI_REALTIME_WS_URL
+            )
+            if use_realtime:
+                twiml_payload = _build_realtime_stream_twiml(initial_prompt)
             else:
-                twiml_payload = _build_gather_twiml(initial_prompt)
+                tts_key = await _generate_tts_audio(initial_prompt)
+                if tts_key:
+                    audio_url = f"{base_url}/api/calls/tts/{tts_key}"
+                    _vr = VoiceResponse()
+                    _g = Gather(input="speech", action=f"{base_url}/api/calls/webhooks/twilio/conversation", method="POST", speech_timeout="auto", timeout=6, action_on_empty_result=True)
+                    _g.play(audio_url)
+                    _vr.append(_g)
+                    _vr.redirect(f"{base_url}/api/calls/webhooks/twilio/conversation", method="POST")
+                    twiml_payload = str(_vr)
+                else:
+                    twiml_payload = _build_gather_twiml(initial_prompt)
             twilio_call = client.calls.create(
                 to=to_number,
                 from_=settings.TWILIO_PHONE_NUMBER,

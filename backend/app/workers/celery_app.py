@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from celery import Celery
+from celery.schedules import crontab
 
 from app.core.config import settings
 
@@ -26,5 +27,13 @@ celery_app.conf.update(
         "app.workers.tasks.send_whatsapp_followup": {"queue": "notification"},
         "app.workers.tasks.send_notification": {"queue": "notification"},
         "app.workers.tasks.transcribe_call_recording": {"queue": "transcript"},
+        "app.workers.tasks.process_due_followups": {"queue": "scheduling"},
+    },
+    beat_schedule={
+        # Check for due follow-ups every minute
+        "process-due-followups-every-minute": {
+            "task": "app.workers.tasks.process_due_followups",
+            "schedule": 60.0,
+        },
     },
 )

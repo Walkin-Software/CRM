@@ -9,7 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.security import get_current_user
+from app.core.logger import logger
 from app.models.models import TimeSlot, Booking, Lead, User
+from app.services.google_meet import create_google_meet_link
 
 router = APIRouter()
 
@@ -99,6 +101,26 @@ async def create_booking(
         lead.status = "demo_scheduled"
 
     db.add(booking)
+    await db.flush()
+
+    # Generate Google Meet link
+    try:
+        meet_link = await create_google_meet_link(
+            title=f"Demo — {lead.full_name}",
+            description=(
+                f"Demo meeting for {lead.full_name} "
+                f"({lead.email or lead.phone}). "
+                f"Interest: {lead.interest or lead.job_role or 'General inquiry'}."
+            ),
+            starts_at=slot.starts_at,
+            ends_at=slot.ends_at,
+            attendee_email=lead.email or None,
+        )
+        if meet_link:
+            booking.meeting_link = meet_link
+    except Exception as exc:
+        logger.warning(f"Google Meet link creation failed for booking {booking.id}: {exc}")
+
     await db.commit()
     await db.refresh(booking)
 

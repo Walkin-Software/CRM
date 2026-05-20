@@ -11,7 +11,7 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from app.core.config import settings
 from app.core.database import engine, Base, ensure_database_exists, seed_default_data
 from app.core.redis_client import get_redis_client, close_redis_client
-from app.api.v1 import auth, leads, notes, follow_ups, users, admin, calls, students, jobs, ai_workflows, notifications, integrations, scheduling
+from app.api.v1 import auth, leads, notes, follow_ups, users, admin, calls, students, jobs, ai_workflows, notifications, integrations, scheduling, payments
 from app.api.v1.calls import set_ngrok_url
 from app.core.logger import logger
 
@@ -154,6 +154,7 @@ app.include_router(ai_workflows.router, prefix="/api/ai",         tags=["AI Work
 app.include_router(notifications.router, prefix="/api/notifications", tags=["Notifications"])
 app.include_router(integrations.router, prefix="/api/integrations", tags=["Integrations"])
 app.include_router(scheduling.router, prefix="/api/scheduling", tags=["Scheduling"])
+app.include_router(payments.router,  prefix="/api/payments",  tags=["Payments"])
 
 # Route aliases for compatibility with frontend
 app.include_router(auth.router,        prefix="/auth",        tags=["Auth Alias"])

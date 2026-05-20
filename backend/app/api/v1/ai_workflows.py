@@ -16,7 +16,7 @@ from app.schemas.schemas import (
     AIScreeningSubmitRequest,
     AIScreeningSessionOut,
 )
-from app.services.ai_content import generate_screening_questions, generate_followup_messages
+from app.services.ai_content import generate_screening_questions, generate_followup_messages, generate_next_turn
 
 router = APIRouter()
 
@@ -304,3 +304,94 @@ async def monitor_session_detail(
             ],
         },
     }
+
+
+# ── Turn-by-turn conversation endpoint ───────────────────────────────────────
+
+@router.post("/screening/{session_id}/respond")
+async def screening_respond(
+    session_id: str,
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Drive a turn-by-turn AI screening conversation.
+
+    Request: { "answer": "candidate's response to the last question" }
+
+    Response:
+        {
+            "ai_response": str,
+            "next_question": str | None,
+            "is_done": bool,
+            "turn_number": int,
+            "sms_message": str,    // only when is_done=true
+            "email_message": str,  // only when is_done=true
+        }
+    """
+    session = (
+        await db.execute(select(AIScreeningSession).where(AIScreeningSession.id == session_id))
+    ).scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Screening session not found")
+
+    lead = (await db.execute(select(Lead).where(Lead.id == session.lead_id))).scalar_one_or_none()
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+
+    candidate_answer = str(payload.get("answer", "")).strip()
+    if not candidate_answer:
+        raise HTTPException(status_code=422, detail="answer is required")
+
+    existing_answers: list[str] = list(session.answers or [])
+    existing_questions: list[str] = list(session.questions or [])
+    existing_answers.append(candidate_answer)
+
+    conversation_history: list[dict] = []
+    for q, a in zip(existing_questions, existing_answers):
+        if q:
+            conversation_history.append({"role": "assistant", "content": q})
+        conversation_history.append({"role": "user", "content": a})
+
+    turn_number = len(existing_answers)
+
+    result = await generate_next_turn(
+        full_name=lead.full_name,
+        job_role=lead.job_role,
+        years_experience=lead.years_experience,
+        conversation_history=conversation_history,
+        turn_number=turn_number,
+    )
+
+    session.answers = existing_answers
+    if result["next_question"]:
+        session.questions = existing_questions + [result["next_question"]]
+
+    response_data: dict = {
+        "ai_response": result["ai_response"],
+        "next_question": result["next_question"],
+        "is_done": result["is_done"],
+        "turn_number": turn_number,
+    }
+
+    if result["is_done"]:
+        session.status = "completed"
+        sms_msg, email_msg = await generate_followup_messages(
+            full_name=lead.full_name,
+            email=lead.email,
+            phone=lead.phone,
+            job_role=lead.job_role,
+            years_experience=lead.years_experience,
+            answers=existing_answers,
+            questions=existing_questions,
+        )
+        session.ai_sms_message = sms_msg
+        session.ai_email_message = email_msg
+        response_data["sms_message"] = sms_msg
+        response_data["email_message"] = email_msg
+    else:
+        session.status = "in_progress"
+
+    await db.commit()
+    return response_data

@@ -156,6 +156,153 @@ async def generate_screening_questions(
     return minimal
 
 
+MAX_SCREENING_TURNS = 4
+
+
+# ── generate_opening_question ─────────────────────────────────────────────────
+
+async def generate_opening_question(
+    *,
+    full_name: str,
+    job_role: Optional[str],
+    years_experience: Optional[float],
+    interest: Optional[str],
+) -> str:
+    """Generate a personalised, role-specific opening question for an AI screening chat."""
+    first_name = full_name.split()[0] if full_name else full_name
+    exp_text = f"{years_experience:g} years" if years_experience else None
+
+    system = (
+        "You are a warm and natural HR screening specialist. "
+        "You are starting a short AI screening chat with a candidate. "
+        "\nYour opening message must:\n"
+        "1. Greet them by first name — warm, human, brief.\n"
+        "2. In one sentence, acknowledge the specific role they applied for.\n"
+        "3. Ask ONE highly specific opening question tailored to their exact role and experience level — "
+        "NOT a generic question like 'tell me about yourself' or 'what are your strengths'.\n"
+        "   Reference their experience level naturally if relevant.\n"
+        "\nRULES:\n"
+        "- Under 60 words total.\n"
+        "- Sound like a real human starting a conversation — not a form or a bot.\n"
+        "- Do NOT say 'How are you today?' or 'Nice to meet you!' — skip pleasantries.\n"
+        "- Ask exactly ONE question.\n"
+        "- Do NOT reveal you are an AI.\n"
+    )
+    user = json.dumps({
+        "first_name": first_name,
+        "full_name": full_name,
+        "job_role": job_role or "Software Developer",
+        "years_experience": exp_text,
+        "interest": interest,
+    })
+
+    try:
+        result = await _chat_completion(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            temperature=0.75,
+            max_tokens=130,
+        )
+        if result and len(result) > 15:
+            return result
+    except Exception as exc:
+        logger.error(f"generate_opening_question failed: {exc}")
+
+    role = job_role or interest or "the role"
+    return (
+        f"Hi {first_name}, I saw your application for {role}. "
+        "Can you walk me through a recent project where you had to solve a challenging technical problem?"
+    )
+
+
+# ── generate_next_turn ────────────────────────────────────────────────────────
+
+async def generate_next_turn(
+    *,
+    full_name: str,
+    job_role: Optional[str],
+    years_experience: Optional[float],
+    conversation_history: list[dict],
+    turn_number: int,
+) -> dict:
+    """
+    Given the full conversation so far, generate the AI's next response.
+
+    Returns:
+        {"ai_response": str, "next_question": str | None, "is_done": bool}
+    """
+    if not conversation_history:
+        return {"ai_response": "", "next_question": None, "is_done": True}
+
+    is_last_turn = turn_number >= MAX_SCREENING_TURNS
+
+    transcript = "\n".join(
+        f"{'Interviewer' if m['role'] == 'assistant' else 'Candidate'}: {m['content']}"
+        for m in conversation_history
+    )
+
+    system = (
+        "You are a warm and sharp HR specialist doing a live screening chat. "
+        "Your ONLY task: read the conversation and generate your NEXT response.\n"
+        "\nSTRICT RULES:\n"
+        "1. ACKNOWLEDGMENT — Write 1 short sentence responding to what the candidate JUST said.\n"
+        "   - Be SPECIFIC: mention something concrete they said (a technology, a number, a project).\n"
+        "   - BAD examples: 'Thanks for sharing.', 'That\\'s great!', 'Interesting.'\n"
+        "   - GOOD examples: 'Three years building REST APIs — solid backend experience.'\n"
+        "2. NEXT QUESTION — Ask ONE question flowing DIRECTLY from what they said.\n"
+        "   - Never repeat a question already asked.\n"
+        "   - Never ask generic questions like 'What are your strengths?'\n"
+        "3. If this is the LAST TURN (is_last=true): skip the question. Close warmly in 1-2 sentences.\n"
+        "\nFORMAT — return JSON only:\n"
+        '{"ai_response": "<acknowledgment only, no question>", "next_question": "<question>" or null}\n'
+        "- ai_response: max 20 words\n"
+        "- next_question: max 25 words, or null if last turn\n"
+    )
+    user = json.dumps({
+        "candidate_name": full_name,
+        "job_role": job_role,
+        "years_experience": years_experience,
+        "turn_number": turn_number,
+        "is_last": is_last_turn,
+        "conversation": transcript,
+    })
+
+    try:
+        text = await _chat_completion(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            temperature=0.65,
+            max_tokens=220,
+            response_format={"type": "json_object"},
+        )
+        parsed = json.loads(text)
+        ai_response = str(parsed.get("ai_response", "")).strip()
+        next_question = parsed.get("next_question")
+        if isinstance(next_question, str):
+            next_question = next_question.strip() or None
+
+        if not ai_response:
+            raise ValueError("empty ai_response")
+
+        return {
+            "ai_response": ai_response,
+            "next_question": next_question if not is_last_turn else None,
+            "is_done": is_last_turn or next_question is None,
+        }
+    except Exception as exc:
+        logger.error(f"generate_next_turn failed: {exc}")
+        first_name = full_name.split()[0] if full_name else full_name
+        if is_last_turn:
+            return {
+                "ai_response": f"Thank you, {first_name}. We'll review your responses and be in touch shortly.",
+                "next_question": None,
+                "is_done": True,
+            }
+        return {
+            "ai_response": "That's helpful context.",
+            "next_question": "Could you tell me more about your most recent project?",
+            "is_done": False,
+        }
+
+
 # ── generate_followup_messages ────────────────────────────────────────────────
 
 async def generate_followup_messages(
@@ -166,6 +313,7 @@ async def generate_followup_messages(
     job_role: Optional[str],
     years_experience: Optional[float],
     answers: list[str],
+    questions: Optional[list[str]] = None,
 ) -> tuple[str, str]:
     cache_payload = {
         "full_name": full_name,
@@ -180,7 +328,13 @@ async def generate_followup_messages(
 
     first_name = full_name.split()[0] if full_name else full_name
     position = job_role or "the role"
-    transcript = "\n".join(f"Response {i + 1}: {a}" for i, a in enumerate(answers) if a.strip())
+    if questions:
+        transcript = "\n\n".join(
+            f"Interviewer: {q}\nCandidate: {a}"
+            for q, a in zip(questions, answers)
+        )
+    else:
+        transcript = "\n".join(f"Response {i + 1}: {a}" for i, a in enumerate(answers) if a.strip())
 
     system = (
         "You are a hiring specialist. Read the candidate's screening transcript and write two personalised follow-up messages.\n"
@@ -456,3 +610,58 @@ async def generate_sales_cross_questions(
         logger.error(f"generate_sales_cross_questions plain-text parse also failed: {exc2}")
 
     return [f"Could you tell me more about your availability for a demo with {company_name}?"]
+
+
+# ── generate_whatsapp_reply ───────────────────────────────────────────────────
+
+async def generate_whatsapp_reply(
+    *,
+    lead_name: Optional[str],
+    company_name: str,
+    company_description: Optional[str],
+    inbound_message: str,
+    conversation_history: list[dict],
+) -> str:
+    """Generate a contextual WhatsApp reply for an inbound message."""
+    history_lines = []
+    for msg in conversation_history[-10:]:
+        role_label = "You" if msg.get("role") == "assistant" else "Lead"
+        history_lines.append(f"{role_label}: {msg.get('content', '')}")
+    history_text = "\n".join(history_lines) if history_lines else "No prior messages."
+
+    company_section = (
+        f"## COMPANY INFO (only answer from this):\n{company_description}\n\n"
+        if company_description and company_description.strip()
+        else ""
+    )
+    name = lead_name or "there"
+
+    system = (
+        f"You are a helpful WhatsApp chat agent for {company_name}. "
+        f"You are chatting with {name}. "
+        "Respond naturally and concisely — this is a WhatsApp chat, keep replies under 100 words. "
+        "Your goal: answer their questions, qualify their interest, and guide them toward booking a demo. "
+        f"{company_section}"
+        "If asked about fees, courses, duration, or curriculum, answer ONLY from Company Info above. "
+        f"If the info is not in Company Info, say 'Our team at {company_name} will share full details in the demo.' "
+        "Never make up numbers or promises. End with a soft call-to-action toward scheduling."
+    )
+    user = (
+        f"CONVERSATION HISTORY:\n{history_text}\n\n"
+        f"LEAD JUST SENT: \"{inbound_message}\"\n\n"
+        "Reply as the chat agent. Keep it conversational and under 100 words."
+    )
+
+    try:
+        return await _chat_completion(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            temperature=0.6,
+            max_tokens=180,
+        )
+    except Exception as exc:
+        logger.error(f"generate_whatsapp_reply failed: {exc}")
+        return (
+            f"Hi {name}! Thanks for reaching out to {company_name}. "
+            "Our team will get back to you shortly with all the details. "
+            "Would you like to book a quick demo call?"
+        )

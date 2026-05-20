@@ -1,11 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { Link } from 'react-router-dom';
-import { 
-  Search, Filter, Plus, UserPlus, 
-  MoreHorizontal, Phone, MessageSquare, 
-  Download, ChevronLeft, ChevronRight 
+import {
+  Search, Filter, Plus, UserPlus,
+  MoreHorizontal, Phone, MessageSquare, Send,
+  Download, Upload, ChevronLeft, ChevronRight, X
 } from 'lucide-react';
-import { leadsAPI, callsAPI, notificationsAPI } from '../lib/api';
+import { leadsAPI, callsAPI, notificationsAPI, api } from '../lib/api';
 import { toast } from 'react-hot-toast';
 
 export default function Leads() {
@@ -18,6 +18,10 @@ export default function Leads() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [savingLead, setSavingLead] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const csvInputRef = useRef(null);
+  const [waModal, setWaModal] = useState({ open: false, lead: null, message: '' });
+  const [sendingWA, setSendingWA] = useState(false);
   const [newLead, setNewLead] = useState({
     full_name: '',
     phone: '',
@@ -216,6 +220,58 @@ export default function Leads() {
     }
   };
 
+  const handleWhatsApp = (lead) => {
+    if (!lead.phone) { toast.error('Lead has no phone number'); return; }
+    const firstName = lead.full_name?.split(' ')[0] || 'there';
+    setWaModal({
+      open: true,
+      lead,
+      message: `Hi ${firstName}! 👋 This is a message from Walkin Software. We noticed your interest in our courses. Would you like to know more or schedule a free demo call?`,
+    });
+  };
+
+  const sendWhatsApp = async () => {
+    if (!waModal.message.trim() || !waModal.lead) return;
+    setSendingWA(true);
+    try {
+      await api.post('/notifications/send', {
+        lead_id: waModal.lead.id,
+        channel: 'whatsapp',
+        to: waModal.lead.phone,
+        body: waModal.message.trim(),
+      });
+      toast.success(`WhatsApp sent to ${waModal.lead.full_name}`);
+      setWaModal({ open: false, lead: null, message: '' });
+    } catch (err) {
+      const detail = err.response?.data?.detail || 'Failed to send WhatsApp message';
+      toast.error(typeof detail === 'string' ? detail : 'Failed to send WhatsApp message');
+    } finally {
+      setSendingWA(false);
+    }
+  };
+
+  const handleImportCSV = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = '';
+    setImporting(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await api.post('/leads/import', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      const { created, skipped, error_count } = res.data;
+      toast.success(`Imported ${created} leads · ${skipped} duplicates skipped${error_count ? ` · ${error_count} errors` : ''}`);
+      fetchLeads();
+    } catch (err) {
+      const msg = err.response?.data?.detail || 'CSV import failed';
+      toast.error(typeof msg === 'string' ? msg : 'CSV import failed');
+    } finally {
+      setImporting(false);
+    }
+  };
+
   return (
     <div className="flex-col gap-6">
       <div className="page-header">
@@ -224,8 +280,19 @@ export default function Leads() {
           <p className="page-subtitle">Track and nurture your sales pipeline</p>
         </div>
         <div className="flex gap-3">
+          {/* Hidden file input for CSV import */}
+          <input
+            ref={csvInputRef}
+            type="file"
+            accept=".csv"
+            style={{ display: 'none' }}
+            onChange={handleImportCSV}
+          />
+          <button className="btn btn-secondary" onClick={() => csvInputRef.current?.click()} disabled={importing}>
+            <Upload size={18} /> {importing ? 'Importing...' : 'Import CSV'}
+          </button>
           <button className="btn btn-secondary" onClick={handleExport} disabled={exporting}>
-            <Download size={18} /> {exporting ? 'Exporting...' : 'Export'}
+            <Download size={18} /> {exporting ? 'Exporting...' : 'Export CSV'}
           </button>
           <button className="btn btn-primary" onClick={() => setShowAddModal(true)}>
             <Plus size={18} /> Add Lead
@@ -327,13 +394,21 @@ export default function Leads() {
                         >
                           <Phone size={16} />
                         </button>
-                        <button 
-                          className="btn btn-icon btn-sm btn-secondary" 
+                        <button
+                          className="btn btn-icon btn-sm btn-secondary"
                           style={{ color: 'var(--brand-success)' }}
                           onClick={() => handleMessage(lead)}
-                          title={`Message ${lead.full_name}`}
+                          title={`Send AI follow-up SMS to ${lead.full_name}`}
                         >
                           <MessageSquare size={16} />
+                        </button>
+                        <button
+                          className="btn btn-icon btn-sm btn-secondary"
+                          style={{ color: '#25D366' }}
+                          onClick={() => handleWhatsApp(lead)}
+                          title={`Send WhatsApp to ${lead.full_name}`}
+                        >
+                          <Send size={16} />
                         </button>
                       </div>
                     </td>
@@ -369,6 +444,88 @@ export default function Leads() {
           </div>
         </div>
       </div>
+
+      {/* ── WhatsApp Quick-Send Modal ─────────────────────── */}
+      {waModal.open && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          zIndex: 1000, padding: 20,
+        }}>
+          <div className="card" style={{ width: '100%', maxWidth: 480 }}>
+            {/* Header */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{
+                  width: 36, height: 36, borderRadius: '50%',
+                  background: '#25D36620', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}>
+                  <Send size={17} style={{ color: '#25D366' }} />
+                </div>
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: 15, color: 'var(--text-primary)' }}>
+                    Send WhatsApp
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                    {waModal.lead?.full_name} · {waModal.lead?.phone}
+                  </div>
+                </div>
+              </div>
+              <button
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 4 }}
+                onClick={() => setWaModal({ open: false, lead: null, message: '' })}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Message input */}
+            <div className="input-group" style={{ marginBottom: 16 }}>
+              <label className="input-label">Message</label>
+              <textarea
+                className="input"
+                rows={5}
+                style={{ resize: 'vertical', fontFamily: 'inherit', fontSize: 14, lineHeight: 1.5 }}
+                value={waModal.message}
+                onChange={e => setWaModal(prev => ({ ...prev, message: e.target.value }))}
+                placeholder="Type your WhatsApp message..."
+              />
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4, textAlign: 'right' }}>
+                {waModal.message.length} chars
+              </div>
+            </div>
+
+            {/* Note */}
+            <div style={{
+              background: '#25D36610', border: '1px solid #25D36630',
+              borderRadius: 8, padding: '8px 12px', marginBottom: 16, fontSize: 12, color: 'var(--text-muted)',
+            }}>
+              Message will be sent from <strong>{import.meta.env.VITE_WHATSAPP_NUMBER || 'your Twilio WhatsApp number'}</strong> via Twilio.
+              The lead must have opted in to the WhatsApp sandbox first.
+            </div>
+
+            {/* Actions */}
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              <button
+                className="btn btn-secondary"
+                onClick={() => setWaModal({ open: false, lead: null, message: '' })}
+                disabled={sendingWA}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn btn-primary"
+                style={{ background: '#25D366', borderColor: '#25D366' }}
+                onClick={sendWhatsApp}
+                disabled={sendingWA || !waModal.message.trim()}
+              >
+                <Send size={15} />
+                {sendingWA ? 'Sending...' : 'Send WhatsApp'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showAddModal && (
         <div

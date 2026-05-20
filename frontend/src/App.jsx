@@ -14,6 +14,9 @@ import CallLogs from './pages/CallLogs';
 import Scheduling from './pages/Scheduling';
 import Analytics from './pages/Analytics';
 import Notifications from './pages/Notifications';
+import FollowUpQueue from './pages/FollowUpQueue';
+import WhatsAppChat from './pages/WhatsAppChat';
+import PublicIntakeForm from './pages/PublicIntakeForm';
 
 function PrivateRoute({ children }) {
   const { user, loading } = useAuth();
@@ -44,19 +47,22 @@ export default function App() {
           }}
         />
         <Routes>
-          <Route path="/login" element={<Login />} />
+          <Route path="/login"  element={<Login />} />
+          <Route path="/intake" element={<PublicIntakeForm />} />
           <Route path="/" element={
             <PrivateRoute>
               <Layout />
             </PrivateRoute>
           }>
-            <Route index            element={<Dashboard />} />
-            <Route path="leads"     element={<Leads />} />
-            <Route path="leads/:id" element={<LeadDetail />} />
-            <Route path="calls"     element={<CallLogs />} />
-            <Route path="schedule"  element={<Scheduling />} />
-            <Route path="analytics" element={<Analytics />} />
-            <Route path="notifications" element={<Notifications />} />
+            <Route index                  element={<Dashboard />} />
+            <Route path="leads"           element={<Leads />} />
+            <Route path="leads/:id"       element={<LeadDetail />} />
+            <Route path="calls"           element={<CallLogs />} />
+            <Route path="schedule"        element={<Scheduling />} />
+            <Route path="analytics"       element={<Analytics />} />
+            <Route path="notifications"   element={<Notifications />} />
+            <Route path="follow-ups"      element={<FollowUpQueue />} />
+            <Route path="whatsapp"        element={<WhatsAppChat />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

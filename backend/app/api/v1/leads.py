@@ -4,7 +4,9 @@ Leads API — Full CRUD for lead management with filtering, search, and paginati
 
 from typing import Optional
 from datetime import datetime, timedelta, timezone
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+import csv
+import io
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_
 from sqlalchemy.orm import selectinload
@@ -276,3 +278,113 @@ async def delete_lead(
     await db.delete(lead)
     await db.commit()
     logger.info(f"Lead deleted: {lead_id} by admin {current_user.id}")
+
+
+# ─── Bulk CSV Import ──────────────────────────────────────────
+
+@router.post("/import")
+async def import_leads_csv(
+    file: UploadFile = File(...),
+    source: str = Query("manual", description="Lead source tag for all imported rows"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Import leads from a CSV file.
+
+    Required columns: full_name, phone
+    Optional columns: email, interest, job_role, years_experience, description, status
+
+    Returns: { created, skipped, errors }
+    """
+    if not file.filename or not file.filename.lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="Only .csv files are accepted")
+
+    content = await file.read()
+    try:
+        text = content.decode("utf-8-sig")  # handle BOM
+    except UnicodeDecodeError:
+        text = content.decode("latin-1")
+
+    reader = csv.DictReader(io.StringIO(text))
+    if reader.fieldnames is None:
+        raise HTTPException(status_code=400, detail="CSV file is empty or has no headers")
+
+    # Normalize headers (strip whitespace, lowercase)
+    normalized_fields = [f.strip().lower() for f in reader.fieldnames]
+    required = {"full_name", "phone"}
+    missing = required - set(normalized_fields)
+    if missing:
+        raise HTTPException(status_code=400, detail=f"CSV missing required columns: {', '.join(sorted(missing))}")
+
+    # Pre-load existing phones for duplicate check
+    existing_phones = set(
+        (await db.execute(select(Lead.phone))).scalars().all()
+    )
+
+    created = 0
+    skipped = 0
+    row_errors: list[dict] = []
+
+    valid_statuses = {"new", "contacted", "qualified", "demo_scheduled", "proposal_sent", "converted", "lost", "unresponsive"}
+    valid_sources = {"inbound_call", "outbound_call", "web_form", "whatsapp", "sms", "referral", "social_media", "manual"}
+
+    for row_num, raw_row in enumerate(reader, start=2):
+        # Normalize keys
+        row = {k.strip().lower(): (v or "").strip() for k, v in raw_row.items()}
+
+        full_name = row.get("full_name", "").strip()
+        phone = row.get("phone", "").strip()
+
+        if not full_name or not phone:
+            row_errors.append({"row": row_num, "reason": "missing full_name or phone", "data": row})
+            continue
+
+        if phone in existing_phones:
+            skipped += 1
+            continue
+
+        row_source = row.get("source", source).strip()
+        if row_source not in valid_sources:
+            row_source = source
+
+        row_status = row.get("status", "new").strip()
+        if row_status not in valid_statuses:
+            row_status = "new"
+
+        yoe = None
+        if row.get("years_experience"):
+            try:
+                yoe = float(row["years_experience"])
+            except ValueError:
+                pass
+
+        lead = Lead(
+            full_name=full_name,
+            phone=phone,
+            email=row.get("email") or None,
+            interest=row.get("interest") or None,
+            job_role=row.get("job_role") or None,
+            years_experience=yoe,
+            description=row.get("description") or None,
+            source=row_source,
+            status=row_status,
+            lead_score=0,
+            lead_temperature="cold",
+        )
+        db.add(lead)
+        existing_phones.add(phone)
+        created += 1
+
+        if created % 50 == 0:
+            await db.flush()
+
+    await db.commit()
+    logger.info(f"CSV import by user={current_user.id}: created={created} skipped={skipped} errors={len(row_errors)}")
+
+    return {
+        "created": created,
+        "skipped": skipped,
+        "error_count": len(row_errors),
+        "errors": row_errors[:20],  # return first 20 for UI display
+    }

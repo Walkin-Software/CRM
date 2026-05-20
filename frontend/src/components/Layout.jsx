@@ -6,13 +6,15 @@ import { Outlet, NavLink, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import {
   LayoutDashboard, Users, Phone, Calendar, BarChart3,
-  Bell, LogOut, Bot, ChevronRight, Settings
+  Bell, LogOut, Bot, ChevronRight, Settings, ClipboardList, MessageSquare
 } from 'lucide-react';
 
 const NAV = [
   { label: 'Overview',      to: '/',             icon: LayoutDashboard },
   { label: 'Leads',         to: '/leads',         icon: Users },
   { label: 'Call Logs',     to: '/calls',         icon: Phone },
+  { label: 'WhatsApp',      to: '/whatsapp',      icon: MessageSquare },
+  { label: 'Follow-Ups',    to: '/follow-ups',    icon: ClipboardList },
   { label: 'Scheduling',    to: '/schedule',      icon: Calendar },
   { label: 'Analytics',     to: '/analytics',     icon: BarChart3 },
   { label: 'Notifications', to: '/notifications', icon: Bell },
