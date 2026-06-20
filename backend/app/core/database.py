@@ -79,31 +79,42 @@ async def seed_default_data():
             )).scalar_one()
 
             # Upsert admin user — always ensure known credentials exist
-            hashed = bcrypt.hashpw(b"Admin@123", bcrypt.gensalt()).decode()
+            hashed = bcrypt.hashpw(b"Nopass@123", bcrypt.gensalt()).decode()
             existing_admin = (await session.execute(
-                text("SELECT id FROM users WHERE email = 'admin@ifocussystec.in'")
+                text("SELECT id FROM users WHERE email = 'admin@exe.in'")
             )).first()
             if existing_admin:
                 await session.execute(
-                    text("UPDATE users SET password_hash = :pw, role_id = :role, is_active = 1 WHERE email = 'admin@ifocussystec.in'"),
+                    text("UPDATE users SET password_hash = :pw, role_id = :role, is_active = 1 WHERE email = 'admin@exe.in'"),
                     {"pw": hashed, "role": admin_role_id},
                 )
-                logger.info("Admin password reset   |  email: admin@ifocussystec.in  |  password: Admin@123")
+                logger.info("Admin password reset   |  email: admin@exe.in  |  password: Nopass@123")
             else:
-                await session.execute(
-                    text(
-                        "INSERT INTO users (id, email, password_hash, full_name, role_id, is_active) "
-                        "VALUES (:id, :email, :pw, :name, :role, 1)"
-                    ),
-                    {
-                        "id": str(uuid.uuid4()),
-                        "email": "admin@ifocussystec.in",
-                        "pw": hashed,
-                        "name": "Admin",
-                        "role": admin_role_id,
-                    },
-                )
-                logger.info("Default admin created  |  email: admin@ifocussystec.in  |  password: Admin@123")
+                # check if the old one exists to migrate it
+                existing_old = (await session.execute(
+                    text("SELECT id FROM users WHERE email = 'admin@ifocussystec.in'")
+                )).first()
+                if existing_old:
+                    await session.execute(
+                        text("UPDATE users SET email = 'admin@exe.in', password_hash = :pw, role_id = :role, is_active = 1 WHERE email = 'admin@ifocussystec.in'"),
+                        {"pw": hashed, "role": admin_role_id},
+                    )
+                    logger.info("Admin email migrated to admin@exe.in | password: Nopass@123")
+                else:
+                    await session.execute(
+                        text(
+                            "INSERT INTO users (id, email, password_hash, full_name, role_id, is_active) "
+                            "VALUES (:id, :email, :pw, :name, :role, 1)"
+                        ),
+                        {
+                            "id": str(uuid.uuid4()),
+                            "email": "admin@exe.in",
+                            "pw": hashed,
+                            "name": "Admin",
+                            "role": admin_role_id,
+                        },
+                    )
+                    logger.info("Default admin created  |  email: admin@exe.in  |  password: Nopass@123")
 
             await session.commit()
         except Exception as exc:
