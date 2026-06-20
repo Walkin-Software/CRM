@@ -34,6 +34,9 @@ async def ensure_database_exists():
 db_url = settings.DATABASE_URL
 if db_url.startswith("postgresql://"):
     db_url = db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    # asyncpg expects 'ssl=true' instead of 'sslmode=verify-full'
+    db_url = db_url.replace("sslmode=verify-full", "ssl=true")
+    db_url = db_url.replace("sslmode=require", "ssl=true")
 
 engine = create_async_engine(
     db_url,
