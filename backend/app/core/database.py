@@ -2,6 +2,17 @@ import re
 import uuid
 import bcrypt
 import aiomysql
+import sqlalchemy
+
+# Monkey-patch sqlalchemy.Enum to default native_enum=False for PostgreSQL/CockroachDB compatibility.
+# This prevents CompileError: PostgreSQL ENUM type requires a name.
+_original_enum_init = sqlalchemy.Enum.__init__
+def _patched_enum_init(self, *args, **kwargs):
+    if "native_enum" not in kwargs:
+        kwargs["native_enum"] = False
+    _original_enum_init(self, *args, **kwargs)
+sqlalchemy.Enum.__init__ = _patched_enum_init
+
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
@@ -32,15 +43,34 @@ async def ensure_database_exists():
 
 
 db_url = settings.DATABASE_URL
-if db_url.startswith("postgresql://"):
-    db_url = db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
-    # asyncpg expects 'ssl=true' instead of 'sslmode=verify-full'
-    db_url = db_url.replace("sslmode=verify-full", "ssl=true")
-    db_url = db_url.replace("sslmode=require", "ssl=true")
+connect_args = {}
+
+if db_url.startswith("postgresql://") or db_url.startswith("postgresql+asyncpg://") or db_url.startswith("cockroachdb://"):
+    # If CockroachDB (indicated by cockroach labs host or port 26257), use cockroachdb dialect
+    if "cockroach" in db_url or "26257" in db_url:
+        db_url = db_url.replace("postgresql://", "cockroachdb+asyncpg://", 1)
+        db_url = db_url.replace("postgresql+asyncpg://", "cockroachdb+asyncpg://", 1)
+        db_url = db_url.replace("cockroachdb://", "cockroachdb+asyncpg://", 1)
+    else:
+        db_url = db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+        db_url = db_url.replace("cockroachdb://", "postgresql+asyncpg://", 1)
+
+    import ssl
+    ssl_ctx = ssl.create_default_context()
+    ssl_ctx.check_hostname = False
+    ssl_ctx.verify_mode = ssl.CERT_NONE
+    connect_args["ssl"] = ssl_ctx
+
+    # Strip sslmode query parameter to prevent asyncpg connector from throwing an error
+    if "?" in db_url:
+        base, query = db_url.split("?", 1)
+        params = [p for p in query.split("&") if not p.startswith("sslmode=")]
+        db_url = base + ("?" + "&".join(params) if params else "")
 
 engine = create_async_engine(
     db_url,
     pool_recycle=3600,
+    connect_args=connect_args,
 )
 
 SessionLocal = async_sessionmaker(
@@ -88,7 +118,7 @@ async def seed_default_data():
             )).first()
             if existing_admin:
                 await session.execute(
-                    text("UPDATE users SET password_hash = :pw, role_id = :role, is_active = 1 WHERE email = 'admin@exe.in'"),
+                    text("UPDATE users SET password_hash = :pw, role_id = :role, is_active = TRUE WHERE email = 'admin@exe.in'"),
                     {"pw": hashed, "role": admin_role_id},
                 )
                 logger.info("Admin password reset   |  email: admin@exe.in  |  password: Nopass@123")
@@ -99,7 +129,7 @@ async def seed_default_data():
                 )).first()
                 if existing_old:
                     await session.execute(
-                        text("UPDATE users SET email = 'admin@exe.in', password_hash = :pw, role_id = :role, is_active = 1 WHERE email = 'admin@ifocussystec.in'"),
+                        text("UPDATE users SET email = 'admin@exe.in', password_hash = :pw, role_id = :role, is_active = TRUE WHERE email = 'admin@ifocussystec.in'"),
                         {"pw": hashed, "role": admin_role_id},
                     )
                     logger.info("Admin email migrated to admin@exe.in | password: Nopass@123")
@@ -107,7 +137,7 @@ async def seed_default_data():
                     await session.execute(
                         text(
                             "INSERT INTO users (id, email, password_hash, full_name, role_id, is_active) "
-                            "VALUES (:id, :email, :pw, :name, :role, 1)"
+                            "VALUES (:id, :email, :pw, :name, :role, TRUE)"
                         ),
                         {
                             "id": str(uuid.uuid4()),

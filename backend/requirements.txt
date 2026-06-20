@@ -10,6 +10,7 @@ sqlalchemy
 aiomysql
 aiosqlite
 asyncpg
+sqlalchemy-cockroachdb
 pymysql
 alembic
 redis

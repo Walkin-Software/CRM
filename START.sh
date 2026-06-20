@@ -160,58 +160,23 @@ else
   redis-cli ping &>/dev/null 2>&1 && ok "Redis started" || { err "Redis failed to start — check $LOG_DIR/redis.log"; exit 1; }
 fi
 
-# ── 2. MySQL ────────────────────────────────────────────────
-section "2 · MySQL"
+# ── 2. CockroachDB (cloud-hosted — no local daemon needed) ──
+section "2 · CockroachDB"
 
-# Parse credentials from DATABASE_URL in .env
+# Parse host/port from DATABASE_URL in .env
 DB_URL="$(grep '^DATABASE_URL=' "$BACKEND_DIR/.env" | cut -d= -f2- | tr -d '"')"
-DB_USER="$(echo "$DB_URL" | sed 's|.*://||; s|:.*||')"
-DB_PASS="$(echo "$DB_URL" | sed 's|.*://[^:]*:||; s|@.*||')"
 DB_HOST="$(echo "$DB_URL" | sed 's|.*@||; s|:[0-9]*/.*||; s|/.*||')"
 DB_PORT="$(echo "$DB_URL" | sed -n 's|.*@[^:]*:\([0-9]*\)/.*|\1|p')"
-DB_NAME="$(echo "$DB_URL" | sed 's|.*/||')"
-DB_PORT="${DB_PORT:-3306}"
+DB_PORT="${DB_PORT:-26257}"
 
-# Locate mysql binary (DMG install or brew)
-MYSQL_BIN=""
-for candidate in \
-    "/usr/local/mysql/bin/mysql" \
-    "/usr/local/mysql-9.5.0-macos15-x86_64/bin/mysql" \
-    "/opt/homebrew/bin/mysql" \
-    "/usr/local/bin/mysql" \
-    "$(command -v mysql 2>/dev/null)"; do
-  if [ -x "$candidate" ]; then
-    MYSQL_BIN="$candidate"
-    break
-  fi
-done
-
-if [ -z "$MYSQL_BIN" ]; then
-  warn "mysql binary not found — skipping DB check"
+if [ -z "$DB_HOST" ]; then
+  warn "Could not parse DB_HOST from DATABASE_URL — skipping connectivity check"
 else
-  MYSQL_CMD="$MYSQL_BIN -u${DB_USER} -p${DB_PASS} -h${DB_HOST} -P${DB_PORT}"
-
-  # Start MySQL if not reachable (DMG install uses launchctl)
-  if ! $MYSQL_CMD -e "SELECT 1" &>/dev/null 2>&1; then
-    info "MySQL not responding — attempting to start..."
-    sudo /usr/local/mysql/support-files/mysql.server start &>/dev/null 2>&1 || \
-    launchctl load -w /Library/LaunchDaemons/com.oracle.oss.mysql.mysqld.plist &>/dev/null 2>&1 || \
-    brew services start mysql &>/dev/null 2>&1 || true
-    sleep 4
-  fi
-
-  if $MYSQL_CMD -e "SELECT 1" &>/dev/null 2>&1; then
-    ok "MySQL is running ($(basename "$MYSQL_BIN") at ${DB_HOST}:${DB_PORT})"
-    # Create database if it doesn't exist
-    if ! $MYSQL_CMD -e "USE \`${DB_NAME}\`" &>/dev/null 2>&1; then
-      info "Database '${DB_NAME}' not found — creating..."
-      $MYSQL_CMD -e "CREATE DATABASE \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
-      ok "Database '${DB_NAME}' created"
-    else
-      ok "Database '${DB_NAME}' exists"
-    fi
+  # Quick TCP reachability test (no psql required)
+  if nc -z -w 5 "$DB_HOST" "$DB_PORT" &>/dev/null 2>&1; then
+    ok "CockroachDB reachable at ${DB_HOST}:${DB_PORT}"
   else
-    warn "MySQL is not reachable at ${DB_HOST}:${DB_PORT} — backend will fail to connect"
+    warn "Cannot reach CockroachDB at ${DB_HOST}:${DB_PORT} — check your DATABASE_URL / network"
   fi
 fi
 

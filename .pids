@@ -1,0 +1,7 @@
+backend:1304
+celery-call:1305
+celery-scheduling:1306
+celery-transcript:1307
+celery-notification:1308
+frontend:1309
+ngrok:1310
