@@ -32,12 +32,23 @@ export default function Leads() {
   const [newLead, setNewLead] = useState({
     full_name: '',
     phone: '',
+    whatsapp_number: '',
     email: '',
+    city: '',
+    state: '',
     interest: '',
+    qualification: '',
+    candidate_status: '',
+    years_experience: '',
+    preferred_learning_mode: '',
+    preferred_batch: '',
+    joining_timeline: '',
+    budget_range: '',
     source: 'manual',
+    referred_by: '',
+    remarks: '',
     lead_type: 'form',
     job_role: '',
-    years_experience: '',
   });
 
   const fetchLeads = async () => {
@@ -186,20 +197,34 @@ export default function Leads() {
         return;
       }
 
-      const headers = ['ID', 'Name', 'Phone', 'Email', 'Interest', 'Status', 'Source', 'Lead Type', 'Job Role', 'Years Experience', 'Created At'];
+      const headers = ['ID','Name','Phone','WhatsApp','Email','City','State','Course Interest','Qualification','Current Status','Experience (yrs)','Learning Mode','Preferred Batch','Joining Timeline','Budget Range','Source','Referred By','Lead Status','Admission Status','Payment Status','Lead Score','Lead Temperature','Remarks','Created At'];
       const csvLines = [headers.join(',')];
+      const q = (v) => `"${(v || '').toString().replace(/"/g, '""')}"`;
       rows.forEach((lead) => {
         csvLines.push([
           lead.id,
-          `"${lead.full_name?.replace(/"/g, '""') || ''}"`,
+          q(lead.full_name),
           lead.phone || '',
+          lead.whatsapp_number || '',
           lead.email || '',
-          `"${lead.interest?.replace(/"/g, '""') || ''}"`,
-          lead.status || '',
+          q(lead.city),
+          q(lead.state),
+          q(lead.interest),
+          lead.qualification || '',
+          lead.candidate_status || '',
+          lead.years_experience ?? '',
+          lead.preferred_learning_mode || '',
+          lead.preferred_batch || '',
+          lead.joining_timeline || '',
+          lead.budget_range || '',
           lead.source || '',
-          lead.lead_type || '',
-          `"${lead.job_role?.replace(/"/g, '""') || ''}"`,
-          lead.years_experience || '',
+          q(lead.referred_by),
+          lead.status || '',
+          lead.admission_status || '',
+          lead.payment_status || '',
+          lead.lead_score || '',
+          lead.lead_temperature || '',
+          q(lead.remarks),
           lead.created_at || '',
         ].join(','));
       });
@@ -226,12 +251,23 @@ export default function Leads() {
     setNewLead({
       full_name: '',
       phone: '',
+      whatsapp_number: '',
       email: '',
+      city: '',
+      state: '',
       interest: '',
+      qualification: '',
+      candidate_status: '',
+      years_experience: '',
+      preferred_learning_mode: '',
+      preferred_batch: '',
+      joining_timeline: '',
+      budget_range: '',
       source: 'manual',
+      referred_by: '',
+      remarks: '',
       lead_type: 'form',
       job_role: '',
-      years_experience: '',
     });
   };
 
@@ -247,12 +283,23 @@ export default function Leads() {
       await leadsAPI.create({
         full_name: newLead.full_name.trim(),
         phone: newLead.phone.trim(),
+        whatsapp_number: newLead.whatsapp_number.trim() || null,
         email: newLead.email.trim() || null,
+        city: newLead.city.trim() || null,
+        state: newLead.state.trim() || null,
         interest: newLead.interest.trim() || null,
+        qualification: newLead.qualification || null,
+        candidate_status: newLead.candidate_status || null,
+        years_experience: newLead.years_experience === '' ? null : Number(newLead.years_experience),
+        preferred_learning_mode: newLead.preferred_learning_mode || null,
+        preferred_batch: newLead.preferred_batch || null,
+        joining_timeline: newLead.joining_timeline || null,
+        budget_range: newLead.budget_range || null,
         source: newLead.source,
+        referred_by: newLead.referred_by.trim() || null,
+        remarks: newLead.remarks.trim() || null,
         lead_type: newLead.lead_type,
         job_role: newLead.job_role.trim() || null,
-        years_experience: newLead.years_experience === '' ? null : Number(newLead.years_experience),
       });
       toast.success('Lead added successfully');
       setShowAddModal(false);
@@ -374,10 +421,12 @@ export default function Leads() {
               </div>
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 8, height: '140px', border: '1px solid var(--border)', borderRadius: '8px', background: 'var(--bg-hover)', marginTop: '14px', padding: 10 }}>
                 {[
-                  ['New', statusCounts.new || 0, '#7c3aed'],
-                  ['Contacted', statusCounts.contacted || 0, '#2563eb'],
-                  ['Qualified', statusCounts.qualified || 0, '#10b981'],
-                  ['Converted', convertedCount, '#06b6d4'],
+                  ['New Lead', statusCounts.new || 0, '#7c3aed'],
+                  ['Active Enquiry', statusCounts.active_enquiry || 0, '#2563eb'],
+                  ['Demo Scheduled', statusCounts.demo_scheduled || 0, '#f97316'],
+                  ['Fee Discussion', statusCounts.fee_discussion || 0, '#0891b2'],
+                  ['Admitted', statusCounts.admitted || 0, '#10b981'],
+                  ['Alumni', statusCounts.alumni || 0, '#06b6d4'],
                 ].map(([label, count, color]) => {
                   const width = total ? Math.max(6, Math.round((count / total) * 100)) : 0;
                   return (
@@ -438,12 +487,23 @@ export default function Leads() {
                   onChange={(e) => { setStatus(e.target.value); setPage(1); }}
                 >
                   <option value="">All Statuses</option>
-                  <option value="new">New</option>
+                  <option value="new">New Lead</option>
                   <option value="contacted">Contacted</option>
                   <option value="qualified">Qualified</option>
+                  <option value="active_enquiry">Active Enquiry</option>
+                  <option value="follow_up_required">Follow-up Required</option>
                   <option value="demo_scheduled">Demo Scheduled</option>
-                  <option value="converted">Converted</option>
+                  <option value="fee_discussion">Fee Discussion</option>
+                  <option value="proposal_sent">Proposal Sent</option>
+                  <option value="documents_pending">Documents Pending</option>
+                  <option value="payment_pending">Payment Pending</option>
+                  <option value="admitted">Admitted</option>
+                  <option value="active_student">Active Student</option>
+                  <option value="course_completed">Course Completed</option>
+                  <option value="placement_support">Placement Support</option>
+                  <option value="alumni">Alumni</option>
                   <option value="lost">Lost</option>
+                  <option value="unresponsive">Unresponsive</option>
                 </select>
                 <button type="submit" className="btn btn-secondary btn-sm" style={{ padding: '4px 8px' }}>
                   Filter
@@ -607,35 +667,39 @@ export default function Leads() {
               {/* Dynamic Panel Content */}
               <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 10, fontSize: '12px' }}>
                 {rightPanelTab === 'Overview' && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: 6, borderBottom: '1px solid var(--bg-hover)' }}>
-                      <span style={{ color: 'var(--text-4)' }}>Email</span>
-                      <span style={{ fontWeight: 600, color: 'var(--text-1)' }}>{activeDetailLead.email || '--'}</span>
-                    </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: 6, borderBottom: '1px solid var(--bg-hover)' }}>
-                      <span style={{ color: 'var(--text-4)' }}>Phone</span>
-                      <span style={{ fontWeight: 600, color: 'var(--text-1)' }}>{activeDetailLead.phone || '--'}</span>
-                    </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: 6, borderBottom: '1px solid var(--bg-hover)' }}>
-                      <span style={{ color: 'var(--text-4)' }}>Company</span>
-                      <span style={{ fontWeight: 600, color: 'var(--text-1)' }}>{activeDetailLead.company || 'TechNova Solutions'}</span>
-                    </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: 6, borderBottom: '1px solid var(--bg-hover)' }}>
-                      <span style={{ color: 'var(--text-4)' }}>Source</span>
-                      <span style={{ fontWeight: 600, color: 'var(--text-1)', textTransform: 'capitalize' }}>{activeDetailLead.source || '--'}</span>
-                    </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: 6, borderBottom: '1px solid var(--bg-hover)' }}>
-                      <span style={{ color: 'var(--text-4)' }}>Status</span>
-                      <span className={`badge badge-${activeDetailLead.status}`} style={{ height: 'fit-content' }}>{activeDetailLead.status}</span>
-                    </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: 6, borderBottom: '1px solid var(--bg-hover)' }}>
-                      <span style={{ color: 'var(--text-4)' }}>Lead Value</span>
-                      <span style={{ fontWeight: 700, color: 'var(--text-4)', fontSize: '11.5px' }}>{`INR ${(activeLeadScore * 1200).toLocaleString()}`}</span>
-                    </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: 6 }}>
-                      <span style={{ color: 'var(--text-4)' }}>Created On</span>
-                      <span style={{ fontWeight: 600, color: 'var(--text-1)' }}>{new Date(activeDetailLead.created_at || Date.now()).toLocaleDateString()}</span>
-                    </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+                    {[
+                      ['Phone', activeDetailLead.phone],
+                      ['WhatsApp', activeDetailLead.whatsapp_number],
+                      ['Email', activeDetailLead.email],
+                      ['City', activeDetailLead.city],
+                      ['State', activeDetailLead.state],
+                      ['Qualification', activeDetailLead.qualification?.replace('_', ' ')],
+                      ['Current Status', activeDetailLead.candidate_status?.replace(/_/g, ' ')],
+                      ['Experience', activeDetailLead.years_experience != null ? `${activeDetailLead.years_experience} yrs` : null],
+                      ['Course Interest', activeDetailLead.interest],
+                      ['Learning Mode', activeDetailLead.preferred_learning_mode?.replace('_', ' ')],
+                      ['Preferred Batch', activeDetailLead.preferred_batch],
+                      ['Joining Timeline', activeDetailLead.joining_timeline?.replace(/_/g, ' ')],
+                      ['Budget Range', activeDetailLead.budget_range?.replace(/_/g, ' ')],
+                      ['Source', activeDetailLead.source?.replace(/_/g, ' ')],
+                      ['Referred By', activeDetailLead.referred_by],
+                      ['Lead Status', null, <span key="s" className={`badge badge-${activeDetailLead.status}`}>{activeDetailLead.status?.replace(/_/g, ' ')}</span>],
+                      ['Admission Status', activeDetailLead.admission_status?.replace(/_/g, ' ')],
+                      ['Payment Status', activeDetailLead.payment_status],
+                      ['Lead Score', `${activeLeadScore}/100`],
+                      ['Created On', new Date(activeDetailLead.created_at || Date.now()).toLocaleDateString()],
+                    ].filter(([, v, node]) => v || node).map(([label, value, node]) => (
+                      <div key={label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '5px 0', borderBottom: '1px solid var(--bg-hover)' }}>
+                        <span style={{ color: 'var(--text-4)', fontSize: 11, textTransform: 'capitalize' }}>{label}</span>
+                        {node || <span style={{ fontWeight: 600, color: 'var(--text-1)', fontSize: 11, textAlign: 'right', maxWidth: '55%', wordBreak: 'break-word', textTransform: 'capitalize' }}>{value}</span>}
+                      </div>
+                    ))}
+                    {activeDetailLead.remarks && (
+                      <div style={{ marginTop: 8, padding: 8, background: 'var(--bg-2)', borderRadius: 6, fontSize: 11, color: 'var(--text-3)', lineHeight: 1.5 }}>
+                        <strong>Remarks:</strong> {activeDetailLead.remarks}
+                      </div>
+                    )}
                   </div>
                 )}
  
@@ -735,72 +799,190 @@ export default function Leads() {
 
       {/* ── Add Lead Modal ── */}
       {showAddModal && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0, 0, 0, 0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '20px' }}>
-          <div className="card" style={{ width: '100%', maxWidth: '580px', maxHeight: '90vh', overflowY: 'auto' }}>
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="chart-title">Add New Lead</h3>
-              <button className="btn btn-secondary btn-sm" onClick={() => { setShowAddModal(false); resetNewLead(); }}>Close</button>
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 20 }}>
+          <div className="card" style={{ width: '100%', maxWidth: 680, maxHeight: '92vh', overflowY: 'auto' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, borderBottom: '1px solid var(--border)', paddingBottom: 12 }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700 }}>Add New Lead</h3>
+                <p style={{ margin: 0, fontSize: 11, color: 'var(--text-4)' }}>PRAVESHA™ AI — Lead Registration Form</p>
+              </div>
+              <button className="btn btn-secondary btn-sm" onClick={() => { setShowAddModal(false); resetNewLead(); }}>✕ Close</button>
             </div>
 
-            <form className="flex-col gap-4" onSubmit={handleCreateLead}>
-              <div className="input-group">
-                <label className="input-label">Full Name *</label>
-                <input className="input" value={newLead.full_name} onChange={(e) => setNewLead(prev => ({ ...prev, full_name: e.target.value }))} required />
-              </div>
-
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-                <div className="input-group">
-                  <label className="input-label">Phone *</label>
-                  <input className="input" placeholder="+91..." value={newLead.phone} onChange={(e) => setNewLead(prev => ({ ...prev, phone: e.target.value }))} required />
+            <form onSubmit={handleCreateLead}>
+              {/* ── Personal Information ── */}
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#2563eb', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>Personal Information</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
+                <div className="input-group" style={{ gridColumn: '1/-1' }}>
+                  <label className="input-label">Full Name *</label>
+                  <input className="input" placeholder="Rahul Sharma" value={newLead.full_name} onChange={e => setNewLead(p => ({ ...p, full_name: e.target.value }))} required />
                 </div>
                 <div className="input-group">
-                  <label className="input-label">Email</label>
-                  <input className="input" type="email" value={newLead.email} onChange={(e) => setNewLead(prev => ({ ...prev, email: e.target.value }))} />
+                  <label className="input-label">Mobile Number *</label>
+                  <input className="input" placeholder="+91 9876543210" value={newLead.phone} onChange={e => setNewLead(p => ({ ...p, phone: e.target.value }))} required />
+                </div>
+                <div className="input-group">
+                  <label className="input-label">WhatsApp Number</label>
+                  <input className="input" placeholder="Same as mobile or different" value={newLead.whatsapp_number} onChange={e => setNewLead(p => ({ ...p, whatsapp_number: e.target.value }))} />
+                </div>
+                <div className="input-group">
+                  <label className="input-label">Email Address</label>
+                  <input className="input" type="email" placeholder="rahul@gmail.com" value={newLead.email} onChange={e => setNewLead(p => ({ ...p, email: e.target.value }))} />
+                </div>
+                <div className="input-group">
+                  <label className="input-label">City *</label>
+                  <input className="input" placeholder="Bengaluru" value={newLead.city} onChange={e => setNewLead(p => ({ ...p, city: e.target.value }))} />
+                </div>
+                <div className="input-group">
+                  <label className="input-label">State</label>
+                  <input className="input" placeholder="Karnataka" value={newLead.state} onChange={e => setNewLead(p => ({ ...p, state: e.target.value }))} />
                 </div>
               </div>
 
-              <div className="input-group">
-                <label className="input-label">Interest</label>
-                <input className="input" value={newLead.interest} onChange={(e) => setNewLead(prev => ({ ...prev, interest: e.target.value }))} />
+              {/* ── Education & Career ── */}
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#7c3aed', margin: '14px 0 8px', textTransform: 'uppercase', letterSpacing: 0.5 }}>Education & Career</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginBottom: 10 }}>
+                <div className="input-group">
+                  <label className="input-label">Highest Qualification *</label>
+                  <select className="input" value={newLead.qualification} onChange={e => setNewLead(p => ({ ...p, qualification: e.target.value }))}>
+                    <option value="">Select...</option>
+                    <option value="10th">10th</option>
+                    <option value="12th">12th</option>
+                    <option value="diploma">Diploma</option>
+                    <option value="graduate">Graduate</option>
+                    <option value="post_graduate">Post Graduate</option>
+                    <option value="other">Other</option>
+                  </select>
+                </div>
+                <div className="input-group">
+                  <label className="input-label">Current Status *</label>
+                  <select className="input" value={newLead.candidate_status} onChange={e => setNewLead(p => ({ ...p, candidate_status: e.target.value }))}>
+                    <option value="">Select...</option>
+                    <option value="student">Student</option>
+                    <option value="fresher">Fresher</option>
+                    <option value="working_professional">Working Professional</option>
+                    <option value="job_seeker">Job Seeker</option>
+                    <option value="business_owner">Business Owner</option>
+                  </select>
+                </div>
+                <div className="input-group">
+                  <label className="input-label">Years of Experience</label>
+                  <select className="input" value={newLead.years_experience} onChange={e => setNewLead(p => ({ ...p, years_experience: e.target.value }))}>
+                    <option value="">Select...</option>
+                    <option value="0">Fresher</option>
+                    <option value="1">0–2 Years</option>
+                    <option value="3">2–5 Years</option>
+                    <option value="6">5+ Years</option>
+                  </select>
+                </div>
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              {/* ── Course Information ── */}
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#f97316', margin: '14px 0 8px', textTransform: 'uppercase', letterSpacing: 0.5 }}>Course Information</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
+                <div className="input-group" style={{ gridColumn: '1/-1' }}>
+                  <label className="input-label">Course Interested In *</label>
+                  <select className="input" value={newLead.interest} onChange={e => setNewLead(p => ({ ...p, interest: e.target.value }))}>
+                    <option value="">Select Course...</option>
+                    <option value="Data Science & AI">Data Science & AI</option>
+                    <option value="Full Stack Development">Full Stack Development</option>
+                    <option value="Digital Marketing">Digital Marketing</option>
+                    <option value="Cloud Computing">Cloud Computing</option>
+                    <option value="DevOps">DevOps</option>
+                    <option value="Cyber Security">Cyber Security</option>
+                    <option value="SAP">SAP</option>
+                    <option value="Python Programming">Python Programming</option>
+                    <option value="Java Development">Java Development</option>
+                    <option value="Corporate Training">Corporate Training</option>
+                    <option value="Other">Other</option>
+                  </select>
+                </div>
                 <div className="input-group">
-                  <label className="input-label">Source</label>
-                  <select className="input" value={newLead.source} onChange={(e) => setNewLead(prev => ({ ...prev, source: e.target.value }))}>
-                    <option value="manual">Manual</option>
-                    <option value="web_form">Web Form</option>
-                    <option value="social_media">Social Media</option>
-                    <option value="inbound_call">Inbound Call</option>
-                    <option value="outbound_call">Outbound Call</option>
-                    <option value="whatsapp">WhatsApp</option>
+                  <label className="input-label">Preferred Learning Mode *</label>
+                  <select className="input" value={newLead.preferred_learning_mode} onChange={e => setNewLead(p => ({ ...p, preferred_learning_mode: e.target.value }))}>
+                    <option value="">Select...</option>
+                    <option value="classroom">Classroom</option>
+                    <option value="online_live">Online Live</option>
+                    <option value="hybrid">Hybrid</option>
+                  </select>
+                </div>
+                <div className="input-group">
+                  <label className="input-label">Preferred Batch</label>
+                  <select className="input" value={newLead.preferred_batch} onChange={e => setNewLead(p => ({ ...p, preferred_batch: e.target.value }))}>
+                    <option value="">Select...</option>
+                    <option value="morning">Morning</option>
+                    <option value="afternoon">Afternoon</option>
+                    <option value="evening">Evening</option>
+                    <option value="weekend">Weekend</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* ── Admission Information ── */}
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#16a34a', margin: '14px 0 8px', textTransform: 'uppercase', letterSpacing: 0.5 }}>Admission Information</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
+                <div className="input-group">
+                  <label className="input-label">When Planning to Join?</label>
+                  <select className="input" value={newLead.joining_timeline} onChange={e => setNewLead(p => ({ ...p, joining_timeline: e.target.value }))}>
+                    <option value="">Select...</option>
+                    <option value="immediately">Immediately</option>
+                    <option value="within_15_days">Within 15 Days</option>
+                    <option value="within_30_days">Within 30 Days</option>
+                    <option value="within_60_days">Within 60 Days</option>
+                  </select>
+                </div>
+                <div className="input-group">
+                  <label className="input-label">Expected Budget</label>
+                  <select className="input" value={newLead.budget_range} onChange={e => setNewLead(p => ({ ...p, budget_range: e.target.value }))}>
+                    <option value="">Select...</option>
+                    <option value="below_10k">Below ₹10,000</option>
+                    <option value="10k_25k">₹10,000 – ₹25,000</option>
+                    <option value="25k_50k">₹25,000 – ₹50,000</option>
+                    <option value="above_50k">Above ₹50,000</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* ── Source & Referral ── */}
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#0891b2', margin: '14px 0 8px', textTransform: 'uppercase', letterSpacing: 0.5 }}>Source & Additional Info</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
+                <div className="input-group">
+                  <label className="input-label">How Did You Hear About Us? *</label>
+                  <select className="input" value={newLead.source} onChange={e => setNewLead(p => ({ ...p, source: e.target.value }))}>
+                    <option value="manual">Manual / Walk-in</option>
+                    <option value="facebook">Facebook</option>
+                    <option value="instagram">Instagram</option>
+                    <option value="google">Google Search</option>
+                    <option value="linkedin">LinkedIn</option>
+                    <option value="youtube">YouTube</option>
+                    <option value="whatsapp">WhatsApp Campaign</option>
+                    <option value="web_form">Website Form</option>
+                    <option value="landing_page">Landing Page</option>
                     <option value="referral">Referral</option>
+                    <option value="inbound_call">Phone Call / Inbound</option>
+                    <option value="outbound_call">Outbound Call</option>
+                    <option value="event_seminar">Event / Seminar</option>
+                    <option value="walk_in">Walk-in</option>
+                    <option value="qr_code">QR Code</option>
+                    <option value="social_media">Social Media (Other)</option>
+                    <option value="sms">SMS</option>
                   </select>
                 </div>
                 <div className="input-group">
-                  <label className="input-label">Lead Type</label>
-                  <select className="input" value={newLead.lead_type} onChange={(e) => setNewLead(prev => ({ ...prev, lead_type: e.target.value }))}>
-                    <option value="form">Form</option>
-                    <option value="call">Call</option>
-                    <option value="dm">DM</option>
-                  </select>
+                  <label className="input-label">Referred By</label>
+                  <input className="input" placeholder="Name of referrer (if any)" value={newLead.referred_by} onChange={e => setNewLead(p => ({ ...p, referred_by: e.target.value }))} />
+                </div>
+                <div className="input-group" style={{ gridColumn: '1/-1' }}>
+                  <label className="input-label">Comments / Questions</label>
+                  <textarea className="input" rows={2} style={{ resize: 'vertical' }} placeholder="Any specific queries or comments..." value={newLead.remarks} onChange={e => setNewLead(p => ({ ...p, remarks: e.target.value }))} />
                 </div>
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-                <div className="input-group">
-                  <label className="input-label">Job Role</label>
-                  <input className="input" value={newLead.job_role} onChange={(e) => setNewLead(prev => ({ ...prev, job_role: e.target.value }))} />
-                </div>
-                <div className="input-group">
-                  <label className="input-label">Years Experience</label>
-                  <input className="input" type="number" min="0" value={newLead.years_experience} onChange={(e) => setNewLead(prev => ({ ...prev, years_experience: e.target.value }))} />
-                </div>
-              </div>
-
-              <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 8 }}>
+              <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 12, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
                 <button type="button" className="btn btn-secondary btn-sm" onClick={() => { setShowAddModal(false); resetNewLead(); }}>Cancel</button>
-                <button type="submit" className="btn btn-primary btn-sm" disabled={savingLead}>{savingLead ? 'Saving...' : 'Save Lead'}</button>
+                <button type="submit" className="btn btn-primary btn-sm" disabled={savingLead} style={{ minWidth: 100 }}>
+                  {savingLead ? 'Saving...' : '+ Save Lead'}
+                </button>
               </div>
             </form>
           </div>

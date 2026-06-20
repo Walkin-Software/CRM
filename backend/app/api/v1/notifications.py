@@ -21,6 +21,9 @@ from app.schemas.schemas import (
 )
 from app.services.ai_content import generate_followup_messages, generate_whatsapp_reply
 from app.core.metrics import NOTIFICATION_SEND_TOTAL
+from app.api.v1.ai_training import DEFAULT_CONFIG
+
+DEFAULT_COMPANY_NAME = DEFAULT_CONFIG.get("agent_company") or "iFocusSystec"
 
 router = APIRouter()
 
@@ -79,12 +82,17 @@ def _send_via_twilio(channel: str, to: str, body: str) -> str:
     return message.sid
 
 
-def _send_via_smtp(to: str, body: str) -> str:
+async def _send_via_smtp(to: str, body: str, company_name: str | None = None) -> str:
+    if not company_name:
+        from app.api.v1.calls import _get_active_agent_config
+        agent_config = await _get_active_agent_config()
+        company_name = agent_config.get("agent_company") or DEFAULT_COMPANY_NAME
+
     if not settings.SMTP_HOST or not settings.SMTP_USER or not settings.SMTP_PASS:
         raise RuntimeError("SMTP credentials are not configured")
 
     msg = EmailMessage()
-    msg["Subject"] = "Skill Lab Notification"
+    msg["Subject"] = f"{company_name} Notification"
     msg["From"] = settings.SMTP_FROM or settings.SMTP_USER
     msg["To"] = to
     msg.set_content(body)
@@ -96,7 +104,12 @@ def _send_via_smtp(to: str, body: str) -> str:
     return f"smtp-{int(datetime.now(timezone.utc).timestamp())}"
 
 
-def _dispatch_message(channel: str, to: str, body: str) -> tuple[str, str | None, str | None]:
+async def _dispatch_message(channel: str, to: str, body: str, company_name: str | None = None) -> tuple[str, str | None, str | None]:
+    if not company_name:
+        from app.api.v1.calls import _get_active_agent_config
+        agent_config = await _get_active_agent_config()
+        company_name = agent_config.get("agent_company") or DEFAULT_COMPANY_NAME
+
     if settings.MOCK_SERVICES:
         return "sent", f"mock-{int(datetime.now(timezone.utc).timestamp())}", None
 
@@ -106,7 +119,7 @@ def _dispatch_message(channel: str, to: str, body: str) -> tuple[str, str | None
             NOTIFICATION_SEND_TOTAL.labels(channel=channel, result="sent").inc()
             return "sent", sid, None
         if channel == "email":
-            sid = _send_via_smtp(to, body)
+            sid = await _send_via_smtp(to, body, company_name)
             NOTIFICATION_SEND_TOTAL.labels(channel=channel, result="sent").inc()
             return "sent", sid, None
         NOTIFICATION_SEND_TOTAL.labels(channel=channel, result="failed").inc()
@@ -123,10 +136,13 @@ def _verify_internal_token(token: str | None) -> None:
 
 @router.get("/templates")
 async def list_templates(current_user: User = Depends(get_current_user)):
+    from app.api.v1.calls import _get_active_agent_config
+    agent_config = await _get_active_agent_config()
+    company_name = agent_config.get("agent_company") or DEFAULT_COMPANY_NAME
     return {
         "templates": [
-            {"name": "Lead Welcome", "preview": "Hi {name}, thanks for your interest in Skill Lab."},
-            {"name": "Screening Follow-up", "preview": "Hi {name}, we reviewed your screening answers."},
+            {"name": "Lead Welcome", "preview": f"Hi {{name}}, thanks for your interest in {company_name}."},
+            {"name": "Screening Follow-up", "preview": f"Hi {{name}}, we reviewed your screening answers."},
             {"name": "Demo Reminder", "preview": "Your demo is confirmed for {date_time}."},
         ]
     }
@@ -138,7 +154,10 @@ async def send_notification(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    status, external_sid, error_message = _dispatch_message(payload.channel, payload.to, payload.body)
+    from app.api.v1.calls import _get_active_agent_config
+    agent_config = await _get_active_agent_config()
+    company_name = agent_config.get("agent_company") or DEFAULT_COMPANY_NAME
+    status, external_sid, error_message = await _dispatch_message(payload.channel, payload.to, payload.body, company_name)
 
     notif = Notification(
         lead_id=payload.lead_id,
@@ -175,7 +194,10 @@ async def send_notification_internal(
 ):
     _verify_internal_token(x_internal_token)
 
-    status, external_sid, error_message = _dispatch_message(payload.channel, payload.to, payload.body)
+    from app.api.v1.calls import _get_active_agent_config
+    agent_config = await _get_active_agent_config()
+    company_name = agent_config.get("agent_company") or DEFAULT_COMPANY_NAME
+    status, external_sid, error_message = await _dispatch_message(payload.channel, payload.to, payload.body, company_name)
     notif = Notification(
         lead_id=payload.lead_id,
         channel=payload.channel,
@@ -208,6 +230,10 @@ async def generate_and_send(
     if not lead:
         raise HTTPException(status_code=404, detail="Lead not found")
 
+    from app.api.v1.calls import _get_active_agent_config
+    agent_config = await _get_active_agent_config()
+    company_name = agent_config.get("agent_company") or DEFAULT_COMPANY_NAME
+
     latest_screening = (
         await db.execute(
             select(AIScreeningSession)
@@ -227,7 +253,7 @@ async def generate_and_send(
         answers=answers,
     )
 
-    sms_status, sms_sid, sms_error = _dispatch_message("sms", lead.phone, sms_msg)
+    sms_status, sms_sid, sms_error = await _dispatch_message("sms", lead.phone, sms_msg, company_name)
     rows = [
         Notification(
             lead_id=lead.id,
@@ -245,7 +271,7 @@ async def generate_and_send(
     email_sid = None
     email_error = None
     if lead.email:
-        email_status, email_sid, email_error = _dispatch_message("email", lead.email, email_msg)
+        email_status, email_sid, email_error = await _dispatch_message("email", lead.email, email_msg, company_name)
         rows.append(
             Notification(
                 lead_id=lead.id,
@@ -414,11 +440,15 @@ async def twilio_inbound_message_webhook(
 
     # Generate AI reply
     reply_text: str | None = None
+    from app.api.v1.calls import _get_active_agent_config
+    agent_config = await _get_active_agent_config()
+    company_name = agent_config.get("agent_company") or DEFAULT_COMPANY_NAME
+
     if not settings.MOCK_SERVICES and (settings.OPENAI_API_KEY or settings.GROQ_API_KEY):
         try:
             reply_text = await generate_whatsapp_reply(
                 lead_name=lead.full_name if lead else None,
-                company_name="Walkin Software",
+                company_name=company_name,
                 company_description=settings.COMPANY_DESCRIPTION or None,
                 inbound_message=inbound_text,
                 conversation_history=history,
@@ -430,7 +460,7 @@ async def twilio_inbound_message_webhook(
     if not reply_text:
         name = lead.full_name.split()[0] if lead and lead.full_name else "there"
         reply_text = (
-            f"Hi {name}! Thanks for your message. Our team will get back to you shortly. "
+            f"Hi {name}! Thanks for your message. Our team at {company_name} will get back to you shortly. "
             "Would you like to schedule a demo call?"
         )
 

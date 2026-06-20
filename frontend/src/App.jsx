@@ -22,6 +22,7 @@ import PublicIntakeForm from './pages/PublicIntakeForm';
 import VisitorIntelligence from './pages/VisitorIntelligence';
 import SocialLeads from './pages/SocialLeads';
 import AITraining from './pages/AITraining';
+import ProductsServices from './pages/ProductsServices';
 import Customers from './pages/Customers';
 import CustomerTickets from './pages/CustomerTickets';
 
@@ -65,6 +66,7 @@ export default function App() {
             <Route path="visitors"        element={<VisitorIntelligence />} />
             <Route path="social-leads"    element={<SocialLeads />} />
             <Route path="ai-training"     element={<AITraining />} />
+            <Route path="products"        element={<ProductsServices />} />
             <Route path="leads"           element={<Leads />} />
             <Route path="leads/:id"       element={<LeadDetail />} />
             <Route path="customers"       element={<Customers />} />

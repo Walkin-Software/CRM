@@ -193,7 +193,13 @@ export const aiTrainingAPI = {
     get:  ()      => api.get('/ai-training/config'),
     save: (data)  => api.post('/ai-training/config', data),
   },
+  catalog: {
+    get:   ()     => api.get('/ai-training/catalog'),
+    save:  (data) => api.post('/ai-training/catalog', data),
+    reset: ()     => api.post('/ai-training/catalog/reset'),
+  },
   chat: (data) => api.post('/ai-training/chat', data),
+  generateQuestions: (data) => api.post('/ai-training/generate-questions', data),
 };
 
 // AI Copilot (sidebar assistant)

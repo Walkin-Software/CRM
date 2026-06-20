@@ -30,7 +30,7 @@ async def add_note(
     note = LeadNote(lead_id=lead_id, author_id=current_user.id, content=payload.content)
     db.add(note)
     await db.flush()
-    await db.refresh(note, ["author"])
+    await db.refresh(note, ["author", "created_at"])
     return NoteOut.model_validate(note, from_attributes=True)
 
 

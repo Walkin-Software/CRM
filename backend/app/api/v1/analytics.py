@@ -127,7 +127,7 @@ async def analytics_overview(
         "hourly_calls": hourly_calls,
     }
 
-    await cache_set_json(cache_key, result, ttl=300)
+    await cache_set_json(cache_key, result, ttl_seconds=300)
     return result
 
 
@@ -183,7 +183,7 @@ async def analytics_daily(
         })
 
     result = {"items": items}
-    await cache_set_json(cache_key, result, ttl=300)
+    await cache_set_json(cache_key, result, ttl_seconds=300)
     return result
 
 
@@ -226,7 +226,7 @@ async def calls_heatmap(
         matrix[day_idx][int(hour)] = count
 
     result = {"matrix": matrix}
-    await cache_set_json(cache_key, result, ttl=600)
+    await cache_set_json(cache_key, result, ttl_seconds=600)
     return result
 
 
@@ -281,5 +281,5 @@ async def conversion_funnel(
         })
 
     result = {"funnel": funnel}
-    await cache_set_json(cache_key, result, ttl=300)
+    await cache_set_json(cache_key, result, ttl_seconds=300)
     return result

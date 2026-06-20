@@ -50,25 +50,8 @@ async def _chat_completion(
     if response_format:
         kwargs["response_format"] = response_format
 
-    # ── 1. OpenAI (skipped if key is known-invalid) ───────────────────────────
-    if settings.OPENAI_API_KEY and not settings.MOCK_SERVICES and not _openai_auth_broken:
-        try:
-            start = time.perf_counter()
-            client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
-            resp = await client.chat.completions.create(model=settings.OPENAI_MODEL, **kwargs)
-            AI_LATENCY_SECONDS.observe(max(time.perf_counter() - start, 0.0))
-            text = (resp.choices[0].message.content or "").strip()
-            if text:
-                return text
-        except Exception as exc:
-            if _is_auth_error(exc):
-                _openai_auth_broken = True
-                logger.warning("OpenAI API key is invalid — switching to Groq for this session")
-            else:
-                logger.warning(f"OpenAI failed, trying Groq: {exc}")
-
-    # ── 2. Groq (OpenAI-compatible, ultra-fast Llama) ─────────────────────────
-    if settings.GROQ_API_KEY:
+    # ── 1. Groq (OpenAI-compatible, ultra-fast Llama) ─────────────────────────
+    if settings.GROQ_API_KEY and not settings.MOCK_SERVICES:
         try:
             start = time.perf_counter()
             groq = AsyncOpenAI(
@@ -84,7 +67,24 @@ async def _chat_completion(
                 logger.info("Groq succeeded")
                 return text
         except Exception as exc:
-            logger.warning(f"Groq failed: {exc}")
+            logger.warning(f"Groq failed, trying OpenAI: {exc}")
+
+    # ── 2. OpenAI (skipped if key is known-invalid) ───────────────────────────
+    if settings.OPENAI_API_KEY and not settings.MOCK_SERVICES and not _openai_auth_broken:
+        try:
+            start = time.perf_counter()
+            client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+            resp = await client.chat.completions.create(model=settings.OPENAI_MODEL, **kwargs)
+            AI_LATENCY_SECONDS.observe(max(time.perf_counter() - start, 0.0))
+            text = (resp.choices[0].message.content or "").strip()
+            if text:
+                return text
+        except Exception as exc:
+            if _is_auth_error(exc):
+                _openai_auth_broken = True
+                logger.warning("OpenAI API key is invalid")
+            else:
+                logger.warning(f"OpenAI failed: {exc}")
 
     raise RuntimeError("Both OpenAI and Groq are unavailable")
 
@@ -426,13 +426,15 @@ async def generate_sales_call_turn(
     prior_questions: Optional[list[str]] = None,
     closing: bool = False,
     company_description: Optional[str] = None,
+    system_prompt: Optional[str] = None,
 ) -> str:
     history_context = ""
-    if prior_questions and prior_answers:
+    if prior_questions:
         lines = []
-        for q, a in zip(prior_questions, prior_answers):
+        for i, q in enumerate(prior_questions):
             lines.append(f"  You asked: {q}")
-            lines.append(f"  Lead said: {a}")
+            if prior_answers and i < len(prior_answers):
+                lines.append(f"  Lead said: {prior_answers[i]}")
         history_context = "CONVERSATION SO FAR:\n" + "\n".join(lines)
 
     lead_parts = []
@@ -450,18 +452,41 @@ async def generate_sales_call_turn(
         else ""
     )
 
-    system = (
-        f"You are {caller_name}, a professional sales executive at {company_name}, on a live phone call with {full_name}. "
-        "Speak like a real, warm human — never robotic or scripted. Do NOT reveal you are an AI. "
-        f"If asked who you are, say you are a sales rep from {company_name}.\n\n"
-        f"{company_section}"
-        "GOAL: answer the lead's questions from company info, confirm interest, and book a demo slot.\n"
-        "STYLE: Under 45 words. Short natural sentences. Always acknowledge what they said first.\n"
-        "ANSWERING: Use ONLY the Company Info above for course/fee/duration questions. "
-        f"If not in company info, say 'Our team at {company_name} will cover that in the demo.'\n"
-        "BOOKING: If they give a date/time, confirm it immediately and close.\n"
-        f"CLOSING: Thank {full_name} by name, confirm what was agreed, end warmly."
-    )
+    word_limit = 40
+    if next_question:
+        q_word_count = len(next_question.split())
+        if q_word_count > 20:
+            word_limit = q_word_count + 20
+    # When a custom system_prompt is passed (e.g. for clarification answers),
+    # allow more words so the AI can answer AND re-ask without being cut off.
+    if system_prompt:
+        word_limit = max(word_limit, 80)
+
+    if system_prompt:
+        system = (
+            f"{system_prompt}\n\n"
+            "STRICT OPERATIONAL GUIDELINES:\n"
+            f"- You are in a live phone conversation with {full_name}.\n"
+            "- Speak like a real, warm human — never robotic or scripted. Do NOT reveal you are an AI.\n"
+            f"- GOAL: Acknowledge what the candidate just said, answer their question from the information, and then ask/continue the next question: {next_question or 'None'}.\n"
+            f"- If they ask something outside the flow, answer briefly from company info and steer back to: {next_question or 'None'}.\n"
+            f"- STYLE: Under {word_limit} words. Short natural sentences. Acknowledge first, then ask."
+        )
+        if closing:
+            system += "\n- CLOSING NOW: Thank the candidate warmly and end the call."
+    else:
+        system = (
+            f"You are {caller_name}, a professional sales executive at {company_name}, on a live phone call with {full_name}. "
+            "Speak like a real, warm human — never robotic or scripted. Do NOT reveal you are an AI. "
+            f"If asked who you are, say you are a sales rep from {company_name}.\n\n"
+            f"{company_section}"
+            "GOAL: answer the lead's questions from company info, confirm interest, and book a demo slot.\n"
+            f"STYLE: Under {max(45, word_limit)} words. Short natural sentences. Always acknowledge what they said first.\n"
+            "ANSWERING: Use ONLY the Company Info above for course/fee/duration questions. "
+            f"If not in company info, say 'Our team at {company_name} will cover that in the demo.'\n"
+            "BOOKING: If they give a date/time, confirm it immediately and close.\n"
+            f"CLOSING: Thank {full_name} by name, confirm what was agreed, end warmly."
+        )
 
     user = (
         f"LEAD PROFILE:\n{lead_context}\n\n"
@@ -469,15 +494,19 @@ async def generate_sales_call_turn(
         f"LEAD JUST SAID: \"{latest_candidate_response}\"\n\n"
         f"NEXT QUESTION (only if needed): {next_question or 'None — confirm booking or close.'}\n"
         f"CLOSING NOW: {'Yes' if closing else 'No'}\n\n"
-        "Respond as the sales exec. Acknowledge first, then act. Under 40 words."
+        f"Respond as the sales exec. Acknowledge first, then act. Under {word_limit} words."
     )
 
     try:
-        return await _chat_completion(
+        max_tokens_val = max(150, int(word_limit * 1.5))
+        logger.info(f"AI CALL TURN: word_limit={word_limit} max_tokens={max_tokens_val} next_question={next_question}")
+        res = await _chat_completion(
             [{"role": "system", "content": system}, {"role": "user", "content": user}],
             temperature=0.5,
-            max_tokens=150,
+            max_tokens=max_tokens_val,
         )
+        logger.info(f"AI CALL TURN RESPONSE: {res}")
+        return res
     except Exception as exc:
         logger.error(f"generate_sales_call_turn failed: {exc}")
         if closing:

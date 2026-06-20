@@ -5,7 +5,7 @@ import {
   LayoutDashboard, Users, Phone, Calendar, BarChart3,
   Bell, LogOut, ClipboardList, MessageSquare,
   Search, Eye, Share2, Brain, UserCheck, Ticket, HelpCircle, Sparkles,
-  ChevronLeft, ChevronRight
+  ChevronLeft, ChevronRight, Package
 } from 'lucide-react';
 import { notificationsAPI } from '../lib/api';
 import CopilotChat from './CopilotChat';
@@ -15,6 +15,7 @@ const NAV = [
   { label: 'Visitor Intelligence', to: '/visitors',     icon: Eye,             subtitle: "Analyze user behaviors, browser metrics, and page visits." },
   { label: 'Social Leads',         to: '/social-leads', icon: Share2,          subtitle: "Track leads generated from active social media channels." },
   { label: 'AI Training',          to: '/ai-training',  icon: Brain, badge: 'New', subtitle: "Train and evaluate your business conversational agents." },
+  { label: 'Products & Services', to: '/products',     icon: Package, badge: 'New', subtitle: "Manage your business's dynamic product and service catalog." },
   { label: 'Leads',                to: '/leads',        icon: Users,           subtitle: "Manage, filter, and track your customer leads database." },
   { label: 'Customers',            to: '/customers',    icon: UserCheck, badge: 'New', subtitle: "Active, lost, and premium customer profiles." },
   { label: 'Customer Tickets',     to: '/tickets',      icon: Ticket, badge: 'New', subtitle: "Manage client support requests and SLA escalations." },

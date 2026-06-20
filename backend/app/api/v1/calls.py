@@ -28,7 +28,7 @@ from app.core.logger import logger
 from app.core.security import get_current_user
 from app.core.config import settings
 from app.core.metrics import OUTBOUND_CALLS_TOTAL, CALL_STATUS_WEBHOOK_TOTAL
-from app.models.models import Call, User, Lead, Conversation, ConversationMessage
+from app.models.models import Call, User, Lead, Conversation, ConversationMessage, AIAgentConfig
 from app.schemas.schemas import PaginatedResponse, CallOut, OutboundCallRequest
 from app.services.ai_content import generate_sales_call_turn, generate_sales_cross_questions, generate_dynamic_next_question
 from app.services.lead_scoring import update_lead_score, score_delta_from_call_status
@@ -38,8 +38,8 @@ from app.workers.tasks import trigger_outbound_call, schedule_retry_chain, trans
 router = APIRouter()
 
 HANGUP_THRESHOLD_SECONDS = 5
-COMPANY_NAME = "Walkin Software"
-AI_CALLER_NAME = "Siri"
+COMPANY_NAME = "iFocusSystec"
+AI_CALLER_NAME = "reva"
 MAX_NO_INPUT_RETRIES = 2
 MAX_CLARIFICATION_RETRIES_PER_QUESTION = 3
 MAX_TOTAL_CLARIFICATION_RETRIES = 8
@@ -280,14 +280,14 @@ def set_ngrok_url(url: str | None) -> None:
 
 
 def _public_base_url() -> str:
-    if _NGROK_URL:
-        return _NGROK_URL
     base = (settings.TWILIO_WEBHOOK_URL or "").strip().rstrip("/")
-    if base.endswith("/webhooks/twilio"):
-        return base[: -len("/webhooks/twilio")]
+    for path in ["/api/calls/webhooks/twilio", "/webhooks/twilio", "/api/calls"]:
+        if base.endswith(path):
+            base = base[: -len(path)]
+            break
     if base:
         return base
-    return f"http://localhost:{settings.PORT}"
+    raise ValueError("TWILIO_WEBHOOK_URL is not configured in .env")
 
 
 def _public_wss_base_url() -> str:
@@ -303,29 +303,202 @@ def _lead_interest_label(lead: Lead) -> str:
     return (lead.interest or lead.job_role or "the role you applied for").strip()
 
 
-async def _build_sales_call_questions(lead: Lead) -> list[str]:
-    interest_label = _lead_interest_label(lead)
+async def _get_active_agent_config() -> dict:
+    try:
+        from app.core.mongodb import get_mongo_db
+        db = get_mongo_db()
+        row = await db["ai_agent_configs"].find_one({"config_key": "agent_defaults"})
+        if row and row.get("config_value"):
+            return row["config_value"]
+    except Exception as e:
+        logger.warning(f"Failed to fetch active agent config from MongoDB: {e}")
+    
+    # Generate default configuration if none is present in database
+    from app.api.v1.ai_training import DEFAULT_CONFIG, compile_system_prompt
+    cfg = dict(DEFAULT_CONFIG)
+    cfg["system_prompt"] = compile_system_prompt(cfg)
+    return cfg
 
-    if "demo" in interest_label.lower():
-        first_question = "Are you interested in proceeding so we can book a demo for you?"
+
+async def _get_product_or_service_details_from_mongo(interest: str | None) -> dict | None:
+    if not interest:
+        return None
+    try:
+        from app.core.mongodb import get_mongo_db
+        db = get_mongo_db()
+        interest_clean = interest.strip()
+        # Search products
+        prod = await db["products"].find_one({"name": {"$regex": f"^{interest_clean}$", "$options": "i"}})
+        if prod:
+            prod["catalog_type"] = "product"
+            return prod
+        # Search services
+        srv = await db["services"].find_one({"name": {"$regex": f"^{interest_clean}$", "$options": "i"}})
+        if srv:
+            srv["catalog_type"] = "service"
+            return srv
+        
+        # Substring search
+        prod = await db["products"].find_one({"name": {"$regex": interest_clean, "$options": "i"}})
+        if prod:
+            prod["catalog_type"] = "product"
+            return prod
+        srv = await db["services"].find_one({"name": {"$regex": interest_clean, "$options": "i"}})
+        if srv:
+            srv["catalog_type"] = "service"
+            return srv
+    except Exception as e:
+        logger.warning(f"Failed to fetch product/service details for interest '{interest}': {e}")
+    return None
+
+
+async def _build_dynamic_prompt_and_questions(lead: Lead | None, agent_config: dict) -> tuple[str, list[str]]:
+    interest = lead.interest if lead else None
+    prod = await _get_product_or_service_details_from_mongo(interest)
+    
+    agent_name = agent_config.get("agent_name") or "reva"
+    company_name = agent_config.get("agent_company") or "WalkinSoftware"
+    agent_language = agent_config.get("agent_language") or "Indian Languages"
+    company_desc = agent_config.get("company_desc") or "We are a technology education and software training provider."
+    company_hq = agent_config.get("company_hq") or "JP Nagar"
+    company_branches = agent_config.get("company_branches") or "US and Singapore"
+    
+    # 1. Screening Questions (only the actual course screening questions)
+    screening_questions = []
+    if prod and prod.get("questions"):
+        screening_questions = [q for q in prod["questions"] if q and q.strip()]
+    
+    if not screening_questions:
+        interest_label = _lead_interest_label(lead) if lead else "this opportunity"
+        screening_questions = _fallback_sales_questions(interest_label)
+        
+    # Prepend Step 1 (greeting check) and Step 2 (company intro check) to conversation flow
+    flow_questions = ["Is this a good time to talk?"]
+    if prod:
+        # Short intro: just the name, duration, and a broad topic hook. NOT the full description.
+        prod_name = prod.get('name') or interest or 'this course'
+        prod_duration = prod.get('duration') or ''
+        duration_phrase = f"a {prod_duration}" if prod_duration else "an"
+        company_intro_flow = (
+            f"Great! This is regarding our {prod_name} course — {duration_phrase} program "
+            f"covering frontend, backend, databases, and placement support. "
+            f"We are based in {company_hq} with branches in {company_branches}. "
+            f"Are you interested in knowing more?"
+        )
     else:
-        first_question = "Are you interested in proceeding with this opportunity?"
+        company_intro_flow = f"This is regarding {company_name}. {company_desc} Our head office is in {company_hq}, and we have branches in {company_branches}. Are you interested in learning more?"
+        
+    flow_questions.append(company_intro_flow)
+    flow_questions.extend(screening_questions)
+        
+    # 2. Product/Service Info block
+    prod_details_block = ""
+    if prod:
+        name = prod.get("name") or interest
+        desc = prod.get("description") or ""
+        duration = prod.get("duration") or ""
+        fee = prod.get("fee_range") or prod.get("fee") or ""
+        features = prod.get("key_features") or []
+        target = prod.get("target_audience") or ""
+        cert = prod.get("certification") or ""
+        
+        features_str = ""
+        if isinstance(features, list):
+            features_str = "\n".join([f"- {f}" for f in features])
+        else:
+            features_str = str(features)
+            
+        prod_details_block = f"""
+[PRODUCT/SERVICE INFO]
+Product/Course/Service: {name}
+Description: {desc}
+Duration: {duration}
+Fee/Pricing: {fee}
+Key Features:
+{features_str}
+Target Audience: {target}
+Certification: {cert}
+"""
+    
+    # 3. Build dynamic System Prompt
+    lead_name = lead.full_name if lead else "Candidate"
+    
+    # Replace default opening line and company intro dynamically if we have product details
+    if prod:
+        prod_name = prod.get('name') or interest or 'this course'
+        prod_duration = prod.get('duration') or ''
+        duration_phrase = f"a {prod_duration}" if prod_duration else "an"
+        opening_line = f"Hi {lead_name}, this is {agent_name} calling from {company_name} regarding your interest in our {prod_name} program. Is this a good time to talk?"
+        company_intro_flow_prompt = (
+            f"Great! This is regarding our {prod_name} course — {duration_phrase} program "
+            f"covering frontend, backend, databases, and placement support. "
+            f"We are based in {company_hq} with branches in {company_branches}. "
+            f"Are you interested in knowing more?"
+        )
+    else:
+        # Fallback to agent_config defaults
+        fm_template = agent_config.get("first_message") or f"Hi {{{{name}}}}, this is {agent_name} calling from {company_name}."
+        opening_line = fm_template.replace("{{name}}", lead_name)
+        company_intro_flow_prompt = f"This is a permanent opportunity with {company_name}. {company_desc} Our head office is in {company_hq}, and we have branches in {company_branches}. Are you interested in this opportunity?"
+        
+    wu_template = agent_config.get("wrap_up") or f"Thanks for your time, {{{{name}}}}! We will get back to you soon. Have a great day!"
+    wrap_up = wu_template.replace("{{name}}", lead_name)
+    
+    rules = agent_config.get("rules") or []
+    rules_block = "\n".join([f"- {r}" for r in rules if r.strip()]) if rules else "- Be professional and courteous."
+    
+    q_block = "3. Screening Questions (ask them one by one, acknowledge briefly, then ask next):\n"
+    for i, q in enumerate(screening_questions):
+        q_block += f"   - Q{i+1}: {q}\n"
+    q_block += "\n"
+    
+    sys_prompt = f"""[Identity]
+You are {agent_name}, a professional and courteous AI assistant from {company_name} who speaks in {agent_language}.
 
-    # Keep only the opening question static.
-    # Remaining turns are AI-generated from interest + description + responses.
-    questions = [
-        first_question,
-        "What would you like to know first about this opportunity?",
-        "What date and time would be convenient for a short discussion with our team?",
-        "What specific outcome are you expecting from this discussion?",
-    ]
+[Call Flow]
+1. Opening line:
+   "{opening_line}" < wait for user response >
 
-    return [question.strip() for question in questions[:3] if question and question.strip()]
+2. Company Introduction:
+   {company_intro_flow_prompt} < wait for response >
+
+3. Dynamic Screening Questions:
+{q_block}
+4. Wrap-Up:
+   "{wrap_up}"
+
+Rules:
+{rules_block}
+
+[Error Handling / Fallback]
+- If any response is unclear, gently ask for clarification.
+- If the candidate prefers not to answer, acknowledge and move on politely.
+"""
+    
+    if prod_details_block:
+        sys_prompt += f"""
+{prod_details_block}
+
+STRICT COMPLIANCE RULES:
+- You must ONLY talk about the course/product/service details listed above. Do not invent any fees, duration, certification details, or key features.
+- If the candidate asks a question not answered in the [PRODUCT/SERVICE INFO] block, say "Our team at {company_name} will share full details in the demo."
+- Ask the Screening Questions one by one, acknowledge their responses briefly, and move to the next.
+"""
+        
+    return sys_prompt, flow_questions
 
 
-def _initial_sales_prompt(lead: Lead, first_question: str, intro_override: str | None = None) -> str:
+async def _build_sales_call_questions(lead: Lead) -> list[str]:
+    agent_config = await _get_active_agent_config()
+    _, questions = await _build_dynamic_prompt_and_questions(lead, agent_config)
+    return questions
+
+
+def _initial_sales_prompt(lead: Lead, first_question: str, intro_override: str | None = None, caller_name: str = "reva", company_name: str = "WalkinSoftware") -> str:
+    if intro_override:
+        return intro_override
     interest_label = _lead_interest_label(lead)
-    intro = intro_override or f"Hello {lead.full_name}, this is {AI_CALLER_NAME} from {COMPANY_NAME}."
+    intro = f"Hello {lead.full_name}, this is {caller_name} from {company_name}."
     return f"{intro} We are calling regarding your interest in {interest_label}. {first_question}"
 
 
@@ -347,13 +520,13 @@ def _sales_followup_prompt(next_question: str) -> str:
     return f"Thank you for sharing that. {next_question}"
 
 
-def _sales_closing_prompt() -> str:
-    return f"Thank you for your time today. Our team at {COMPANY_NAME} will review your responses and contact you shortly. Have a great day."
+def _sales_closing_prompt(company_name: str = "iFocusSystec") -> str:
+    return f"Thank you for your time today. Our team at {company_name} will review your responses and contact you shortly. Have a great day."
 
 
-def _sales_clarification_limit_prompt() -> str:
+def _sales_clarification_limit_prompt(company_name: str = "iFocusSystec") -> str:
     return (
-        f"Thank you for your questions. Our {COMPANY_NAME} team will get back to you with full details "
+        f"Thank you for your questions. Our {company_name} team will get back to you with full details "
         "about the demo, course, and pricing. Have a great day."
     )
 
@@ -385,26 +558,10 @@ async def _resolve_next_main_question(
     answers: list[str],
 ) -> str:
     fallback_question = questions[next_index] if 0 <= next_index < len(questions) else "What date and time would be convenient for your demo discussion?"
-    if next_index <= 0:
-        return fallback_question
-
-    asked_questions = list(state.get("asked_questions") or [])
-    if not settings.MOCK_SERVICES and settings.OPENAI_API_KEY:
-        generated = await generate_dynamic_next_question(
-            company_name=COMPANY_NAME,
-            caller_name=AI_CALLER_NAME,
-            interest=lead.interest if lead else None,
-            job_role=lead.job_role if lead else None,
-            lead_description=lead.description if lead else None,
-            latest_candidate_response=latest_candidate_response,
-            prior_answers=answers,
-            prior_questions=asked_questions,
-        )
-        return _ensure_not_repeated_question(generated, asked_questions, fallback_question)
     return fallback_question
 
 
-def _sales_candidate_concern_reply(candidate_text: str) -> str | None:
+def _sales_candidate_concern_reply(candidate_text: str, company_name: str = "iFocusSystec") -> str | None:
     text = (candidate_text or "").lower()
     if any(phrase in text for phrase in ["what is demo", "demo for", "why demo", "demo required", "demo mean", "about the demo session"]):
         return (
@@ -419,8 +576,13 @@ def _sales_candidate_concern_reply(candidate_text: str) -> str | None:
         return "Thank you for asking. Compensation details are shared by our recruitment team after the next screening step."
     if any(word in text for word in ["location", "remote", "hybrid", "onsite"]):
         return "Thank you for asking. Work location and mode are confirmed by the hiring team based on the role and project."
-    if any(word in text for word in ["company", "walkin", "software", "know more", "about this", "about the", "demo", "product", "service"]):
-        return f"{COMPANY_NAME} is a software-focused organization, and our team is contacting you regarding your role interest."
+    
+    # Compile dynamic company words for matching
+    company_words = [w.strip().lower() for w in (company_name or "").split() if len(w.strip()) > 1]
+    company_match_words = ["company", "software", "know more", "about this", "about the", "demo", "product", "service"] + company_words
+    if any(word in text for word in company_match_words):
+        return f"{company_name} is a software-focused organization, and our team is contacting you regarding your role interest."
+        
     if any(word in text for word in ["when", "process", "next", "timeline"]):
         return "Our recruitment team will contact you with the next steps soon after this call."
     return None
@@ -540,9 +702,7 @@ def _should_generate_cross_questions(asked_question: str, candidate_response: st
 
 
 def _sales_no_input_prompt(question: str, retry_count: int) -> str:
-    if retry_count <= 0:
-        return f"I didn't catch that. {question}"
-    return f"I'm sorry, I still could not hear your response clearly. {question}"
+    return f"I was not able to capture you, could you please say it again? {question}"
 
 
 def _sales_call_state(call: Call) -> dict:
@@ -710,22 +870,7 @@ async def _append_conversation_message(
 
 
 def _build_realtime_system_prompt(lead: Lead | None, questions: list[str]) -> str:
-    lead_name = lead.full_name if lead else "Candidate"
-    interest_label = _lead_interest_label(lead) if lead else "the role discussed"
-    numbered_questions = "\n".join([f"{idx + 1}. {question}" for idx, question in enumerate(questions[:3])])
-    return (
-        f"You are {AI_CALLER_NAME}, a professional sales executive from {COMPANY_NAME}. "
-        "This is a live phone conversation with a candidate. "
-        f"Greet the candidate by name ({lead_name}), mention the call is about their interest in {interest_label}, "
-        "and then ask qualification questions one by one. "
-        "After each candidate response, acknowledge briefly and continue with the next question. "
-        "If the candidate asks something outside the flow, answer briefly and steer back to the next question. "
-        "If the interest is demo, ensure a date and time is captured. "
-        "When all questions are done, thank the candidate and end politely. "
-        "Keep each response short and natural for phone conversation. "
-        "The target question sequence is:\n"
-        f"{numbered_questions}"
-    )
+    raise RuntimeError("Hardcoded system prompt fallback is disabled. Ensure configuration is saved in MongoDB.")
 
 
 def _twilio_media_to_pcm24k(media_payload_b64: str) -> bytes:
@@ -1203,7 +1348,7 @@ async def list_calls(
 
     if twilio_live_mode and page == 1:
         try:
-            client = TwilioClient(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
+            client = _twilio_client()
             await _import_recent_twilio_calls(db, client, limit=min(max(page_size * 2, 20), 50))
         except Exception as exc:
             logger.warning(f"Twilio import skipped: {exc}")
@@ -1231,7 +1376,7 @@ async def list_calls(
     # blocking Twilio API call per row, easily timing out at page_size=100.
     if twilio_live_mode and page == 1:
         try:
-            client = TwilioClient(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
+            client = _twilio_client()
             changed = False
             recent_calls = [c for c in calls if c.twilio_call_sid][:5]
             for call in recent_calls:
@@ -1322,11 +1467,31 @@ async def twilio_inbound_call_webhook(
         await db.execute(select(Lead).where(Lead.phone == from_number).limit(1))
     ).scalar_one_or_none()
 
-    questions = _fallback_sales_questions(_lead_interest_label(lead) if lead else "our services")
+    agent_config = await _get_active_agent_config()
+    caller_name = agent_config.get("agent_name") or "reva"
+    company_name = agent_config.get("agent_company") or "iFocusSystec"
+
+    sys_prompt, questions = await _build_dynamic_prompt_and_questions(lead, agent_config)
+
+    # Let's override greeting using product name if found
+    interest = lead.interest if lead else None
+    prod = await _get_product_or_service_details_from_mongo(interest)
+    if prod:
+        greeting = f"Hi {lead.full_name if lead else 'Candidate'}, this is {caller_name} calling from {company_name} regarding your interest in our {prod.get('name')} program. Is this a good time to talk?"
+    else:
+        first_msg_template = agent_config.get("first_message")
+        if first_msg_template:
+            greeting = first_msg_template.replace("{{name}}", lead.full_name if lead else "Candidate")
+        else:
+            greeting = (
+                f"Hello {lead.full_name}, this is {caller_name} from {company_name}."
+                if lead else f"Hello, this is {caller_name} from {company_name}."
+            )
+
     initial_prompt = (
-        _initial_sales_prompt(lead, questions[0])
+        _initial_sales_prompt(lead, questions[0], intro_override=greeting, caller_name=caller_name, company_name=company_name)
         if lead
-        else f"Hello, thank you for calling {COMPANY_NAME}. This is {AI_CALLER_NAME}. {questions[0]}"
+        else f"{greeting} {questions[0]}"
     )
 
     call = Call(
@@ -1348,8 +1513,8 @@ async def twilio_inbound_call_webhook(
                 "current_question_index": 0,
                 "no_input_retries": 0,
                 "completed": False,
-                "company_name": COMPANY_NAME,
-                "caller_name": AI_CALLER_NAME,
+                "company_name": company_name,
+                "caller_name": caller_name,
             },
         },
         started_at=datetime.now(timezone.utc),
@@ -1393,11 +1558,37 @@ async def outbound_call(
         raise HTTPException(status_code=404, detail="Lead not found")
 
     to_number = _e164(payload.to_number or lead.phone)
-    sales_questions = await _build_sales_call_questions(lead)
+
+    agent_config = await _get_active_agent_config()
+    caller_name = agent_config.get("agent_name") or "reva"
+    company_name = agent_config.get("agent_company") or "iFocusSystec"
+
+    first_msg_template = agent_config.get("first_message")
+    if first_msg_template:
+        greeting = first_msg_template.replace("{{name}}", lead.full_name if lead else "Candidate")
+    else:
+        greeting = f"Hello {lead.full_name}, this is {caller_name} from {company_name}."
+
+    sys_prompt, sales_questions = await _build_dynamic_prompt_and_questions(lead, agent_config)
+
+    # Override greeting using product details
+    interest = lead.interest if lead else None
+    prod = await _get_product_or_service_details_from_mongo(interest)
+    if prod:
+        greeting = f"Hi {lead.full_name}, this is {caller_name} calling from {company_name} regarding your interest in our {prod.get('name')} program. Is this a good time to talk?"
+    else:
+        first_msg_template = agent_config.get("first_message")
+        if first_msg_template:
+            greeting = first_msg_template.replace("{{name}}", lead.full_name if lead else "Candidate")
+        else:
+            greeting = f"Hello {lead.full_name}, this is {caller_name} from {company_name}."
+
     initial_prompt = _initial_sales_prompt(
         lead,
         sales_questions[0],
-        payload.message,
+        payload.message or greeting,
+        caller_name=caller_name,
+        company_name=company_name,
     )
 
     twilio_sid = None
@@ -1413,7 +1604,7 @@ async def outbound_call(
 
     if use_twilio:
         try:
-            client = TwilioClient(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
+            client = _twilio_client()
             base_url = _public_base_url()
 
             use_realtime = (
@@ -1450,10 +1641,12 @@ async def outbound_call(
             provider_status = _normalize_call_status(twilio_call.status, 0)
             provider = "twilio"
             logger.info(f"Outbound call triggered sid={twilio_sid} lead_id={lead.id} to={to_number}")
-        except TwilioRestException as exc:
-            logger.warning(f"Twilio failed for lead={lead.id}, falling back to mock: {exc.msg}")
-            provider_status = "answered"
-            provider = "mock"
+        except Exception as exc:
+            logger.error(f"Twilio failed for lead={lead.id}: {exc}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Twilio outbound call failed: {exc}"
+            )
     else:
         provider_status = "answered"
 
@@ -1478,8 +1671,8 @@ async def outbound_call(
                 "current_question_index": 0,
                 "no_input_retries": 0,
                 "completed": False,
-                "company_name": COMPANY_NAME,
-                "caller_name": AI_CALLER_NAME,
+                "company_name": company_name,
+                "caller_name": caller_name,
             },
             "retry_attempt": 0,
         },
@@ -1527,6 +1720,16 @@ async def outbound_call_internal(
     return await outbound_call(payload, db, internal_user)
 
 
+def _is_closing_response(text: str) -> bool:
+    t = (text or "").lower()
+    end_phrases = [
+        "great day", "goodbye", "good day", "bye", "take care", 
+        "confirmed email id", "suitable opportunity comes up",
+        "thanks for your time", "thank you for your time"
+    ]
+    return any(p in t for p in end_phrases)
+
+
 @router.get("/webhooks/twilio/conversation")
 async def twilio_conversation_webhook_probe():
     # Some tunnel checks/manual tests use GET; keep this endpoint non-404.
@@ -1551,8 +1754,35 @@ async def twilio_conversation_webhook(
             lead = (await db.execute(select(Lead).where(Lead.id == call.lead_id))).scalar_one_or_none()
 
         state = _sales_call_state(call)
+        
+        agent_config = await _get_active_agent_config()
+        COMPANY_NAME = state.get("company_name") or agent_config.get("agent_company") or "iFocusSystec"
+        AI_CALLER_NAME = state.get("caller_name") or agent_config.get("agent_name") or "reva"
+        sys_prompt, questions_list_built = await _build_dynamic_prompt_and_questions(lead, agent_config)
+        
         questions = list(state.get("questions") or [])
         asked_questions = list(state.get("asked_questions") or [])
+
+        # Capture original functions using local imports to avoid UnboundLocalError and recursion in closures
+        from app.services.ai_content import generate_sales_call_turn as orig_generate_sales_call_turn
+        from app.api.v1.calls import _tts_gather_response as orig_tts_gather_response
+
+        async def _generate_sales_call_turn_local(**kwargs):
+            if "system_prompt" not in kwargs:
+                kwargs["system_prompt"] = sys_prompt
+            return await orig_generate_sales_call_turn(**kwargs)
+        generate_sales_call_turn = _generate_sales_call_turn_local
+
+        async def _tts_gather_response_local(text: str, *args, **kwargs):
+            if _is_closing_response(text):
+                state["completed"] = True
+                state["completed_at"] = datetime.now(timezone.utc).isoformat()
+                _update_sales_call_state(call, state)
+                await db.commit()
+                return await _tts_closing_response(text)
+            return await orig_tts_gather_response(text, *args, **kwargs)
+        _tts_gather_response = _tts_gather_response_local
+
         if not questions:
             interest_label = _lead_interest_label(lead) if lead else "this opportunity"
             questions = _fallback_sales_questions(interest_label)
@@ -1668,7 +1898,7 @@ async def twilio_conversation_webhook(
 
             # Move to next main question if available, otherwise close.
             if current_index >= len(questions) - 1:
-                closing_prompt = _sales_closing_prompt()
+                closing_prompt = _sales_closing_prompt(COMPANY_NAME)
                 await _append_conversation_message(
                     db,
                     call,
@@ -1792,7 +2022,7 @@ async def twilio_conversation_webhook(
                 clarification_retries > MAX_CLARIFICATION_RETRIES_PER_QUESTION
                 or total_clarifications > MAX_TOTAL_CLARIFICATION_RETRIES
             ):
-                closing_prompt = _sales_clarification_limit_prompt()
+                closing_prompt = _sales_clarification_limit_prompt(COMPANY_NAME)
                 await _append_conversation_message(
                     db,
                     call,
@@ -1807,27 +2037,61 @@ async def twilio_conversation_webhook(
                 await db.commit()
                 return await _tts_closing_response(closing_prompt)
 
+            # Answer the candidate's question from product info, then re-ask the same question
+            prod_info = await _get_product_or_service_details_from_mongo(lead.interest if lead else None)
+            prod_info_context = ""
+            if prod_info:
+                prod_info_context = (
+                    f"Course: {prod_info.get('name', '')}\n"
+                    f"Duration: {prod_info.get('duration', 'Not specified')}\n"
+                    f"Fee: {prod_info.get('fee_range') or prod_info.get('fee', 'Not specified')}\n"
+                    f"Description: {prod_info.get('description', '')}"
+                )
+
             fallback_prompt = (
-                "Thanks for your question. Based on current details, our team can clarify anything beyond this. "
-                f"To proceed, {active_question}"
+                f"Sure! To answer your question — this is a {prod_info.get('duration', '') if prod_info else ''} "
+                f"{(lead.interest or 'course') if lead else 'course'} program. "
+                f"Our team at {COMPANY_NAME} will share the full detailed breakdown with you. "
+                f"Now, {active_question}"
             )
             next_prompt = fallback_prompt
-            if not settings.MOCK_SERVICES and settings.OPENAI_API_KEY:
-                generated_prompt = await generate_sales_call_turn(
-                    company_name=COMPANY_NAME,
-                    caller_name=AI_CALLER_NAME,
-                    full_name=lead.full_name if lead and lead.full_name else "there",
-                    interest=lead.interest if lead else None,
-                    job_role=lead.job_role if lead else None,
-                    lead_description=lead.description if lead else None,
-                    latest_candidate_response=speech_text,
-                    next_question=active_question,
-                    prior_answers=answers,
-                    prior_questions=asked_questions,
-                    closing=False,
-                    company_description=settings.COMPANY_DESCRIPTION or None,
+
+            ai_available = not settings.MOCK_SERVICES and (settings.OPENAI_API_KEY or settings.GROQ_API_KEY)
+            if ai_available:
+                # Build an answer-first prompt: explicitly answer the candidate's question
+                # from the product info, then re-ask the same screening question.
+                answer_system = (
+                    f"{sys_prompt}\n\n"
+                    "YOU ARE ON A LIVE PHONE CALL.\n"
+                    "The candidate just asked a QUESTION about the course/program.\n"
+                    f"PRODUCT INFO:\n{prod_info_context}\n\n"
+                    "YOUR TASK (in this exact order):\n"
+                    "1. Directly answer the candidate's question using ONLY the product info above. Be specific and accurate.\n"
+                    "2. After answering, re-ask this screening question: " + active_question + "\n"
+                    "RULES:\n"
+                    "- Under 60 words total.\n"
+                    "- Answer first, then re-ask. Do NOT skip the answer.\n"
+                    "- If the answer is not in the product info, say 'Our team at " + COMPANY_NAME + " will share those details with you.'"
                 )
-                next_prompt = (generated_prompt or "").strip() or fallback_prompt
+                try:
+                    generated_prompt = await generate_sales_call_turn(
+                        company_name=COMPANY_NAME,
+                        caller_name=AI_CALLER_NAME,
+                        full_name=lead.full_name if lead and lead.full_name else "there",
+                        interest=lead.interest if lead else None,
+                        job_role=lead.job_role if lead else None,
+                        lead_description=lead.description if lead else None,
+                        latest_candidate_response=speech_text,
+                        next_question=active_question,
+                        prior_answers=answers,
+                        prior_questions=asked_questions,
+                        closing=False,
+                        company_description=prod_info_context or settings.COMPANY_DESCRIPTION or None,
+                        system_prompt=answer_system,
+                    )
+                    next_prompt = (generated_prompt or "").strip() or fallback_prompt
+                except Exception:
+                    next_prompt = fallback_prompt
 
             await _append_conversation_message(
                 db,
@@ -1886,7 +2150,7 @@ async def twilio_conversation_webhook(
 
             # Cross-question sequence complete; now move to the next main round.
             if current_index >= len(questions) - 1:
-                closing_prompt = _sales_closing_prompt()
+                closing_prompt = _sales_closing_prompt(COMPANY_NAME)
                 await _append_conversation_message(
                     db,
                     call,
@@ -1988,7 +2252,47 @@ async def twilio_conversation_webhook(
                 return await _tts_gather_response(cross_prompt)
 
         if current_index >= len(questions) - 1:
-            closing_prompt = _sales_closing_prompt()
+            # Before closing: if the candidate's last response is actually a question,
+            # answer it from product info first, then deliver a wrap-up on the next turn.
+            if _is_candidate_clarification_request(speech_text) or "?" in speech_text:
+                concern_reply = _sales_candidate_concern_reply(speech_text, COMPANY_NAME)
+                answer_text = concern_reply or (
+                    f"That's a great question! Our team at {COMPANY_NAME} will share all the details with you. "
+                    f"To give you a quick answer from what I know — please check with our team for the specifics."
+                )
+                # Try AI to give a proper answer using product info
+                if not settings.MOCK_SERVICES and settings.OPENAI_API_KEY:
+                    try:
+                        ai_answer = await generate_sales_call_turn(
+                            company_name=COMPANY_NAME,
+                            caller_name=AI_CALLER_NAME,
+                            full_name=lead.full_name if lead and lead.full_name else "there",
+                            interest=lead.interest if lead else None,
+                            job_role=lead.job_role if lead else None,
+                            lead_description=lead.description if lead else None,
+                            latest_candidate_response=speech_text,
+                            next_question=None,
+                            prior_answers=answers[:-1],
+                            prior_questions=asked_questions,
+                            closing=True,
+                            company_description=settings.COMPANY_DESCRIPTION or None,
+                        )
+                        if ai_answer and ai_answer.strip():
+                            answer_text = ai_answer.strip()
+                    except Exception:
+                        pass
+                await _append_conversation_message(
+                    db, call, role="assistant", content=answer_text, intent="sales_final_answer", confidence=1.0
+                )
+                conversation = await _ensure_conversation_for_call(db, call)
+                conversation.summary = " ".join(answer.strip() for answer in answers if answer.strip())[:500] or conversation.summary
+                state["completed"] = True
+                state["completed_at"] = datetime.now(timezone.utc).isoformat()
+                _update_sales_call_state(call, state)
+                await db.commit()
+                return await _tts_closing_response(answer_text)
+
+            closing_prompt = _sales_closing_prompt(COMPANY_NAME)
             await _append_conversation_message(
                 db,
                 call,
@@ -2016,7 +2320,10 @@ async def twilio_conversation_webhook(
         )
         fallback_prompt = _sales_followup_prompt(next_main_question)
         next_prompt = fallback_prompt
-        if not settings.MOCK_SERVICES and settings.OPENAI_API_KEY:
+        # Skip AI generation for the first 2 flow questions (greeting + company intro)
+        # to prevent the LLM from prematurely closing the call with "thank you" phrases.
+        is_early_flow_question = next_index <= 1
+        if not is_early_flow_question and not settings.MOCK_SERVICES and settings.OPENAI_API_KEY:
             generated_prompt = await generate_sales_call_turn(
                 company_name=COMPANY_NAME,
                 caller_name=AI_CALLER_NAME,
@@ -2199,18 +2506,36 @@ async def twilio_media_stream_bridge(
                             questions = list(state.get("questions") or [])
                         if not questions:
                             interest_label = _lead_interest_label(lead) if lead else "this opportunity"
-                            questions = _fallback_sales_questions(interest_label)
+                            questions = await _get_product_questions_from_mongo(lead.interest if lead else None)
+                            if not questions:
+                                questions = _fallback_sales_questions(interest_label)
 
-                        greeting = (
-                            f"Hello {lead.full_name}, this is {AI_CALLER_NAME} from {COMPANY_NAME}."
-                            if lead else f"Hello, this is {AI_CALLER_NAME} from {COMPANY_NAME}."
-                        )
+                        agent_config = await _get_active_agent_config()
+                        sys_prompt, questions = await _build_dynamic_prompt_and_questions(lead, agent_config)
+
+                        caller_name = agent_config.get("agent_name") or "reva"
+                        company_name = agent_config.get("agent_company") or "iFocusSystec"
+                        
+                        interest = lead.interest if lead else None
+                        prod = await _get_product_or_service_details_from_mongo(interest)
+                        if prod:
+                            greeting = f"Hi {lead.full_name if lead else 'Candidate'}, this is {caller_name} calling from {company_name} regarding your interest in our {prod.get('name')} program. Is this a good time to talk?"
+                        else:
+                            first_msg_template = agent_config.get("first_message")
+                            if first_msg_template:
+                                greeting = first_msg_template.replace("{{name}}", lead.full_name if lead else "Candidate")
+                            else:
+                                greeting = (
+                                    f"Hello {lead.full_name}, this is {caller_name} from {company_name}."
+                                    if lead else f"Hello, this is {caller_name} from {company_name}."
+                                )
+
                         await ai_ws.send(
                             json.dumps(
                                 {
                                     "type": "session.update",
                                     "session": {
-                                        "system_prompt": _build_realtime_system_prompt(lead, questions),
+                                        "system_prompt": sys_prompt,
                                         "greeting": greeting,
                                         "output": {"voice": settings.ASSEMBLYAI_REALTIME_VOICE},
                                     },
@@ -2450,7 +2775,7 @@ async def backfill_twilio_recordings(
     if not settings.TWILIO_ACCOUNT_SID or not settings.TWILIO_AUTH_TOKEN:
         raise HTTPException(status_code=500, detail="Twilio credentials are not configured")
 
-    client = TwilioClient(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
+    client = _twilio_client()
     rows = (
         await db.execute(
             select(Call)
@@ -2530,7 +2855,7 @@ async def sync_call_history(
         base_query = base_query.where(Call.status.in_(["initiated", "ringing", "in_progress"]))
 
     rows = (await db.execute(base_query.limit(max_calls))).scalars().all()
-    client = TwilioClient(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
+    client = _twilio_client()
 
     updated = 0
     for call in rows:
@@ -2613,13 +2938,12 @@ async def call_transcript(
         raise HTTPException(status_code=404, detail="Call not found")
 
     if _is_answered_status(call.status):
-        await _ensure_call_transcript_available(db, call)
+        try:
+            await _ensure_call_transcript_available(db, call)
+        except Exception as exc:
+            logger.warning(f"Failed to check transcript availability for call {call_id}: {exc}")
 
     transcript_text = await _get_call_transcript_text(db, call.id)
-    if not transcript_text:
-        transcript_error = (call.metadata_ or {}).get("transcript_error")
-        if transcript_error:
-            raise HTTPException(status_code=503, detail=f"Transcript generation failed: {transcript_error}")
 
     conversation = (
         await db.execute(
@@ -2629,20 +2953,37 @@ async def call_transcript(
             .limit(1)
         )
     ).scalar_one_or_none()
-    if not conversation:
-        return {"call_id": call.id, "summary": None, "transcript": transcript_text, "qa": []}
 
-    messages = (
-        await db.execute(
-            select(ConversationMessage)
-            .where(ConversationMessage.conversation_id == conversation.id)
-            .order_by(ConversationMessage.created_at.asc())
-        )
-    ).scalars().all()
+    messages = []
+    if conversation:
+        messages = (
+            await db.execute(
+                select(ConversationMessage)
+                .where(ConversationMessage.conversation_id == conversation.id)
+                .order_by(ConversationMessage.created_at.asc())
+            )
+        ).scalars().all()
+
+    if not transcript_text and messages:
+        lines = []
+        for m in messages:
+            if m.intent == "call_transcript":
+                continue
+            role_label = "Interviewer" if m.role == "assistant" else "Candidate"
+            lines.append(f"{role_label}: {m.content}")
+        if lines:
+            transcript_text = "\n".join(lines)
+
+    if not transcript_text:
+        transcript_error = (call.metadata_ or {}).get("transcript_error")
+        if transcript_error:
+            raise HTTPException(status_code=503, detail=f"Transcript generation failed: {transcript_error}")
 
     qa = []
     pending_question = None
     for message in messages:
+        if message.intent == "call_transcript":
+            continue
         if message.role == "assistant":
             pending_question = message.content
         elif message.role == "user":
@@ -2657,7 +2998,7 @@ async def call_transcript(
 
     return {
         "call_id": call.id,
-        "summary": conversation.summary,
+        "summary": conversation.summary if conversation else None,
         "transcript": transcript_text,
         "qa": qa,
     }
@@ -2744,3 +3085,6 @@ async def download_recording(
         filename=path.name,
         content_disposition_type="attachment",
     )
+
+# Reload trigger comment to refresh environment settings
+

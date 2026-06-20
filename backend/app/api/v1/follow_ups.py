@@ -113,7 +113,10 @@ async def process_due_followups_internal(
             fu.completed_at = now
             continue
 
-        note_text = fu.note or f"Hi {lead.full_name}, this is a follow-up from Walkin Software. How can we help you?"
+        from app.api.v1.calls import _get_active_agent_config
+        agent_config = await _get_active_agent_config()
+        company_name = agent_config.get("agent_company") or "iFocusSystec"
+        note_text = fu.note or f"Hi {lead.full_name}, this is a follow-up from {company_name}. How can we help you?"
 
         try:
             if fu.method == "call":

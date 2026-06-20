@@ -89,7 +89,7 @@ async def register(payload: UserCreate, db: AsyncSession = Depends(get_db)):
     db.add(user)
     await db.flush()
     await db.commit()
-    await db.refresh(user, ["role"])
+    await db.refresh(user, ["role", "created_at"])
     logger.info(f"New user registered: {user.email}")
     return user
 
@@ -118,7 +118,7 @@ async def login(payload: LoginRequest, request: Request, db: AsyncSession = Depe
     db.add(db_token)
     await db.commit()
 
-    await db.refresh(user, ["role"])
+    await db.refresh(user, ["role", "created_at"])
     logger.info(f"User logged in: {user.email} from {request.client.host}")
 
     return LoginResponse(

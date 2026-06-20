@@ -21,6 +21,10 @@ class Settings(BaseSettings):
         env="DATABASE_URL"
     )
     DB_POOL_SIZE: int = Field(10, env="DB_POOL_SIZE")
+    MONGODB_URI: str = Field(
+        "mongodb+srv://sharanm0009_db_user:G5YqySbMtjnV5bzu@crm.5cjfwj6.mongodb.net/?appName=CRM",
+        env="MONGODB_URI"
+    )
 
     # ── Redis ─────────────────────────────────────────────────
     REDIS_URL: str = Field("redis://localhost:6379", env="REDIS_URL")

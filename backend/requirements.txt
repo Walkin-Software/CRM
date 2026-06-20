@@ -29,3 +29,7 @@ Pillow
 websockets
 email-validator
 aiofiles
+audioop-lts
+motor==3.7.1
+pymongo==4.17.0
+

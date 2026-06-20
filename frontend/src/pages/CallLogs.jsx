@@ -2,7 +2,7 @@ import { useEffect, useState, useRef, useCallback } from 'react';
 import { 
   PhoneIncoming, PhoneOutgoing, Clock, Play, Pause, Download, Search, Filter, 
   ChevronLeft, ChevronRight, Eye, Phone, MessageSquare, Send,
-  Sparkles, ChevronDown, CheckCircle, Calendar, Plus
+  Sparkles, ChevronDown, CheckCircle, Calendar, Plus, X
 } from 'lucide-react';
 import { callsAPI } from '../lib/api';
 import { toast } from 'react-hot-toast';
@@ -20,6 +20,39 @@ function formatClock(seconds) {
   const m = Math.floor(s / 60);
   const r = s % 60;
   return `${String(m).padStart(2, '0')}:${String(r).padStart(2, '0')}`;
+}
+
+function parseTranscript(text) {
+  if (!text) return [];
+  const lines = text.split('\n');
+  const messages = [];
+  let currentSpeaker = null;
+  let currentText = '';
+
+  for (let line of lines) {
+    line = line.trim();
+    if (!line) continue;
+
+    const match = line.match(/^(Interviewer|Agent|Candidate|User|reva|caller|system|assistant):(.*)/i);
+    if (match) {
+      if (currentSpeaker) {
+        messages.push({ speaker: currentSpeaker, text: currentText.trim() });
+      }
+      currentSpeaker = match[1].trim();
+      currentText = match[2].trim();
+    } else {
+      if (currentSpeaker) {
+        currentText += ' ' + line;
+      } else {
+        currentSpeaker = 'System';
+        currentText = line;
+      }
+    }
+  }
+  if (currentSpeaker) {
+    messages.push({ speaker: currentSpeaker, text: currentText.trim() });
+  }
+  return messages;
 }
 
 function getCallStatusUI(status) {
@@ -77,6 +110,12 @@ export default function CallLogs() {
   const [recordingLoading, setRecordingLoading] = useState(false);
   const [recordingError, setRecordingError] = useState(null);
 
+  // Transcript Modal States
+  const [transcriptModalCall, setTranscriptModalCall] = useState(null);
+  const [modalTranscriptData, setModalTranscriptData] = useState(null);
+  const [modalTranscriptLoading, setModalTranscriptLoading] = useState(false);
+  const [modalTab, setModalTab] = useState('dialog');
+
   const audioRef = useRef(null);
 
   useEffect(() => {
@@ -128,6 +167,37 @@ export default function CallLogs() {
     }
     loadTranscript(activeDetailCall.id);
   }, [activeDetailCall?.id, loadTranscript]);
+
+  useEffect(() => {
+    if (!transcriptModalCall?.id) {
+      setModalTranscriptData(null);
+      return;
+    }
+    let active = true;
+    async function fetchModalTranscript() {
+      setModalTranscriptLoading(true);
+      setModalTranscriptData(null);
+      try {
+        const res = await callsAPI.transcript(transcriptModalCall.id);
+        if (!active) return;
+        setModalTranscriptData(res.data);
+      } catch (err) {
+        if (!active) return;
+        if (err.response?.status !== 404) {
+          const detail = err.response?.data?.detail;
+          if (detail && !String(detail).includes('Transcript generation failed')) {
+            toast.error(typeof detail === 'string' ? detail : 'Failed to load transcript');
+          }
+        }
+      } finally {
+        if (active) setModalTranscriptLoading(false);
+      }
+    }
+    fetchModalTranscript();
+    return () => {
+      active = false;
+    };
+  }, [transcriptModalCall?.id]);
 
   useEffect(() => {
     if (!activeDetailCall?.id) {
@@ -434,7 +504,7 @@ export default function CallLogs() {
                                 className="btn-icon"
                                 style={{ padding: 4 }}
                                 title="View transcript"
-                                onClick={() => { setSelectedCall(call); setDetailsTab('Summary'); }}
+                                onClick={() => { setTranscriptModalCall(call); }}
                               >
                                 <Eye size={11} style={{ color: 'var(--text-3)' }} />
                               </button>
@@ -691,6 +761,380 @@ export default function CallLogs() {
           )}
         </div>
       </div>
+
+      {/* Transcript Modal */}
+      {transcriptModalCall && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(15, 23, 42, 0.4)',
+          backdropFilter: 'blur(8px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 9999,
+          padding: '20px'
+        }} onClick={() => setTranscriptModalCall(null)}>
+          <div style={{
+            backgroundColor: 'var(--card-bg, #ffffff)',
+            borderRadius: '16px',
+            width: '100%',
+            maxWidth: '750px',
+            maxHeight: '90vh',
+            boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)',
+            border: '1px solid var(--border, rgba(226, 232, 240, 0.8))',
+            display: 'flex',
+            flexDirection: 'column',
+            overflow: 'hidden'
+          }} onClick={(e) => e.stopPropagation()}>
+            
+            {/* Modal Header */}
+            <div style={{
+              padding: '16px 20px',
+              borderBottom: '1px solid var(--border, #e2e8f0)',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              background: 'rgba(248, 250, 252, 0.5)'
+            }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 850, color: 'var(--text-1)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <PhoneIncoming size={16} style={{ color: 'var(--primary, #2563eb)' }} />
+                  Call Transcript: {transcriptModalCall.direction === 'inbound' ? transcriptModalCall.from_number : transcriptModalCall.to_number}
+                </h3>
+                <span style={{ fontSize: '11px', color: 'var(--text-4)' }}>
+                  {new Date(transcriptModalCall.created_at).toLocaleString()} &bull; Duration: {formatDuration(transcriptModalCall.duration_seconds)}
+                </span>
+              </div>
+              <button 
+                onClick={() => setTranscriptModalCall(null)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  cursor: 'pointer',
+                  color: 'var(--text-3)',
+                  padding: '4px',
+                  borderRadius: '50%',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  transition: 'background-color 0.2s'
+                }}
+                onMouseOver={(e) => e.currentTarget.style.backgroundColor = 'var(--border, #f1f5f9)'}
+                onMouseOut={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Modal Navigation Tabs */}
+            <div style={{
+              display: 'flex',
+              borderBottom: '1px solid var(--border, #e2e8f0)',
+              background: 'rgba(248, 250, 252, 0.3)',
+              padding: '0 20px'
+            }}>
+              <button 
+                onClick={() => setModalTab('dialog')}
+                style={{
+                  padding: '12px 16px',
+                  border: 'none',
+                  background: 'none',
+                  fontSize: '13px',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  color: modalTab === 'dialog' ? 'var(--primary, #2563eb)' : 'var(--text-3)',
+                  borderBottom: modalTab === 'dialog' ? '2px solid var(--primary, #2563eb)' : '2px solid transparent',
+                  transition: 'all 0.2s'
+                }}
+              >
+                Conversation Flow
+              </button>
+              <button 
+                onClick={() => setModalTab('qa')}
+                style={{
+                  padding: '12px 16px',
+                  border: 'none',
+                  background: 'none',
+                  fontSize: '13px',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  color: modalTab === 'qa' ? 'var(--primary, #2563eb)' : 'var(--text-3)',
+                  borderBottom: modalTab === 'qa' ? '2px solid var(--primary, #2563eb)' : '2px solid transparent',
+                  transition: 'all 0.2s'
+                }}
+              >
+                Structured Q&amp;A
+              </button>
+              <button 
+                onClick={() => setModalTab('summary')}
+                style={{
+                  padding: '12px 16px',
+                  border: 'none',
+                  background: 'none',
+                  fontSize: '13px',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  color: modalTab === 'summary' ? 'var(--primary, #2563eb)' : 'var(--text-3)',
+                  borderBottom: modalTab === 'summary' ? '2px solid var(--primary, #2563eb)' : '2px solid transparent',
+                  transition: 'all 0.2s'
+                }}
+              >
+                AI Summary
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div style={{
+              padding: '20px',
+              overflowY: 'auto',
+              flex: 1,
+              backgroundColor: 'rgba(248, 250, 252, 0.4)',
+              minHeight: '300px'
+            }}>
+              {modalTranscriptLoading ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', padding: '10px' }}>
+                  <div className="skeleton" style={{ height: '40px', width: '70%', borderRadius: '8px' }} />
+                  <div className="skeleton" style={{ height: '35px', width: '50%', borderRadius: '8px', alignSelf: 'flex-end' }} />
+                  <div className="skeleton" style={{ height: '45px', width: '80%', borderRadius: '8px' }} />
+                  <div className="skeleton" style={{ height: '30px', width: '40%', borderRadius: '8px', alignSelf: 'flex-end' }} />
+                </div>
+              ) : !modalTranscriptData || (!modalTranscriptData.transcript && !modalTranscriptData.summary && (!modalTranscriptData.qa || modalTranscriptData.qa.length === 0)) ? (
+                <div style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  padding: '40px',
+                  textAlign: 'center',
+                  color: 'var(--text-4)'
+                }}>
+                  <MessageSquare size={48} style={{ color: 'var(--border)', marginBottom: '16px' }} />
+                  <h4 style={{ margin: '0 0 8px', fontSize: '15px', color: 'var(--text-1)', fontWeight: 600 }}>No Transcript Available</h4>
+                  <p style={{ margin: 0, fontSize: '12.5px', maxWidth: '320px', lineHeight: 1.5 }}>
+                    {['no_response', 'no_answer', 'busy', 'failed'].includes(transcriptModalCall.status?.toLowerCase()) 
+                      ? "This call was not connected, so no conversation was recorded."
+                      : "The recording is currently being processed and transcribed. Please try again shortly."}
+                  </p>
+                </div>
+              ) : (
+                <>
+                  {/* Tab Content: Dialog Flow (Chat Bubble Format) */}
+                  {modalTab === 'dialog' && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', padding: '4px' }}>
+                      {parseTranscript(modalTranscriptData.transcript).map((msg, idx) => {
+                        const isAgent = ['interviewer', 'agent', 'reva', 'system', 'assistant'].includes(msg.speaker.toLowerCase());
+                        return (
+                          <div 
+                            key={idx}
+                            style={{
+                              display: 'flex',
+                              flexDirection: 'column',
+                              alignItems: isAgent ? 'flex-start' : 'flex-end',
+                              maxWidth: '85%',
+                              alignSelf: isAgent ? 'flex-start' : 'flex-end'
+                            }}
+                          >
+                            <div style={{
+                              fontSize: '10.5px',
+                              fontWeight: 600,
+                              color: 'var(--text-4)',
+                              marginBottom: '4px',
+                              marginLeft: isAgent ? '4px' : '0',
+                              marginRight: isAgent ? '0' : '4px'
+                            }}>
+                              {isAgent ? 'reva (AI Agent)' : 'Candidate'}
+                            </div>
+                            <div style={{
+                              padding: '10px 14px',
+                              borderRadius: isAgent ? '12px 12px 12px 2px' : '12px 12px 2px 12px',
+                              backgroundColor: isAgent ? 'rgba(37, 99, 235, 0.08)' : 'var(--card-bg, white)',
+                              color: isAgent ? 'var(--primary, #2563eb)' : 'var(--text-2, #334155)',
+                              border: isAgent ? '1px solid rgba(37, 99, 235, 0.2)' : '1px solid var(--border, #e2e8f0)',
+                              boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
+                              fontSize: '12.5px',
+                              lineHeight: 1.5,
+                              whiteSpace: 'pre-wrap'
+                            }}>
+                              {msg.text}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {/* Tab Content: Structured Q&A */}
+                  {modalTab === 'qa' && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                      {modalTranscriptData.qa && modalTranscriptData.qa.length > 0 ? (
+                        modalTranscriptData.qa.map((item, idx) => (
+                          <div 
+                            key={idx}
+                            style={{
+                              backgroundColor: 'var(--card-bg, white)',
+                              borderRadius: '10px',
+                              border: '1px solid var(--border, #e2e8f0)',
+                              padding: '14px',
+                              boxShadow: '0 1px 3px rgba(0,0,0,0.02)',
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: '8px'
+                            }}
+                          >
+                            {item.question && (
+                              <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
+                                <span style={{
+                                  backgroundColor: 'rgba(37, 99, 235, 0.08)',
+                                  color: 'var(--primary, #2563eb)',
+                                  fontSize: '10px',
+                                  fontWeight: 800,
+                                  padding: '2px 6px',
+                                  borderRadius: '4px',
+                                  textTransform: 'uppercase',
+                                  marginTop: '2px'
+                                }}>
+                                  Q
+                                </span>
+                                <span style={{ fontSize: '12.5px', fontWeight: 600, color: 'var(--text-1)' }}>
+                                  {item.question}
+                                </span>
+                              </div>
+                            )}
+                            <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
+                              <span style={{
+                                  backgroundColor: 'rgba(22, 163, 74, 0.08)',
+                                  color: '#16a34a',
+                                  fontSize: '10px',
+                                  fontWeight: 800,
+                                  padding: '2px 6px',
+                                  borderRadius: '4px',
+                                  textTransform: 'uppercase',
+                                  marginTop: '2px'
+                              }}>
+                                A
+                              </span>
+                              <span style={{ fontSize: '12.5px', color: 'var(--text-2)', lineHeight: 1.5 }}>
+                                {item.answer}
+                              </span>
+                            </div>
+                          </div>
+                        ))
+                      ) : (
+                        // Fallback if qa is empty, build from parsed transcript
+                        parseTranscript(modalTranscriptData.transcript)
+                          .reduce((acc, msg, i, arr) => {
+                            const isAgent = ['interviewer', 'agent', 'reva', 'system', 'assistant'].includes(msg.speaker.toLowerCase());
+                            if (isAgent) {
+                              const nextMsg = arr.slice(i+1).find(m => !['interviewer', 'agent', 'reva', 'system', 'assistant'].includes(m.speaker.toLowerCase()));
+                              if (nextMsg) {
+                                acc.push({ question: msg.text, answer: nextMsg.text });
+                              }
+                            }
+                            return acc;
+                          }, [])
+                          .map((item, idx) => (
+                            <div 
+                              key={idx}
+                              style={{
+                                backgroundColor: 'var(--card-bg, white)',
+                                borderRadius: '10px',
+                                border: '1px solid var(--border, #e2e8f0)',
+                                padding: '14px',
+                                boxShadow: '0 1px 3px rgba(0,0,0,0.02)',
+                                display: 'flex',
+                                flexDirection: 'column',
+                                gap: '8px'
+                              }}
+                            >
+                              <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
+                                <span style={{
+                                  backgroundColor: 'rgba(37, 99, 235, 0.08)',
+                                  color: 'var(--primary, #2563eb)',
+                                  fontSize: '10px',
+                                  fontWeight: 800,
+                                  padding: '2px 6px',
+                                  borderRadius: '4px',
+                                  textTransform: 'uppercase',
+                                  marginTop: '2px'
+                                }}>
+                                  Q
+                                </span>
+                                <span style={{ fontSize: '12.5px', fontWeight: 600, color: 'var(--text-1)' }}>
+                                  {item.question}
+                                </span>
+                              </div>
+                              <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
+                                <span style={{
+                                  backgroundColor: 'rgba(22, 163, 74, 0.08)',
+                                  color: '#16a34a',
+                                  fontSize: '10px',
+                                  fontWeight: 800,
+                                  padding: '2px 6px',
+                                  borderRadius: '4px',
+                                  textTransform: 'uppercase',
+                                  marginTop: '2px'
+                                }}>
+                                  A
+                                </span>
+                                <span style={{ fontSize: '12.5px', color: 'var(--text-2)', lineHeight: 1.5 }}>
+                                  {item.answer}
+                                </span>
+                              </div>
+                            </div>
+                          ))
+                      )}
+                    </div>
+                  )}
+
+                  {/* Tab Content: Summary */}
+                  {modalTab === 'summary' && (
+                    <div style={{
+                      backgroundColor: 'var(--card-bg, white)',
+                      borderRadius: '12px',
+                      border: '1px solid var(--border, #e2e8f0)',
+                      padding: '20px',
+                      boxShadow: '0 1px 3px rgba(0,0,0,0.02)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '16px'
+                    }}>
+                      <div>
+                        <h4 style={{ margin: '0 0 6px', fontSize: '14px', color: 'var(--text-1)', fontWeight: 700 }}>AI Call Summary</h4>
+                        <p style={{ margin: 0, fontSize: '12.5px', color: 'var(--text-2)', lineHeight: 1.6 }}>
+                          {modalTranscriptData.summary || "No AI-generated summary available for this call."}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div style={{
+              padding: '12px 20px',
+              borderTop: '1px solid var(--border, #e2e8f0)',
+              display: 'flex',
+              justifyContent: 'flex-end',
+              background: 'rgba(248, 250, 252, 0.5)',
+              gap: '8px'
+            }}>
+              <button 
+                className="btn btn-secondary btn-sm"
+                onClick={() => setTranscriptModalCall(null)}
+                style={{ fontWeight: 600 }}
+              >
+                Close
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
     </div>
   );
 }

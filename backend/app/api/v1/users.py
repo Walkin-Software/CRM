@@ -45,5 +45,6 @@ async def update_user(
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(user, field, value)
 
-    await db.refresh(user, ["role"])
+    await db.commit()
+    await db.refresh(user, ["role", "created_at"])
     return UserOut.model_validate(user, from_attributes=True)

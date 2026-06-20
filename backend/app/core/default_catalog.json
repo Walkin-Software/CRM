@@ -1,0 +1,582 @@
+{
+  "products": [
+    {
+      "code": "PROD001",
+      "name": "Data Science & AI",
+      "category": "Training",
+      "description": "PRAVESHA™ AI Data Science & AI Program is a comprehensive 6-month training course covering the entire data science and artificial intelligence stack. Students learn Python programming, machine learning algorithms, deep learning with TensorFlow and PyTorch, data wrangling with Pandas and NumPy, data visualization with Matplotlib and Seaborn, SQL and NoSQL databases, NLP (Natural Language Processing), Computer Vision, and MLOps. The program includes real-world industry projects, a capstone project, and 1-on-1 mentorship with working data scientists. This course is suitable for freshers, IT professionals, engineers, and analysts who want to transition into AI/ML roles. Key selling points: 100% placement assistance, PRAVESHA™ AI certification recognized by 500+ companies, EMI facility available, batch options include Classroom (Mon–Sat), Online Live, and Hybrid mode. Fee ranges from ₹40,000 to ₹60,000 depending on mode chosen. The AI agent should highlight: job demand (Data Science is #1 fastest growing job), salary packages (₹6–25 LPA), no prior coding needed, free demo class available, and next batch starts soon.",
+      "key_features": [
+        "Python, NumPy, Pandas, Matplotlib & Seaborn",
+        "Machine Learning — Supervised, Unsupervised & Reinforcement",
+        "Deep Learning — TensorFlow, Keras, PyTorch",
+        "NLP & Computer Vision projects",
+        "SQL, NoSQL (MongoDB), and Big Data (Spark)",
+        "MLOps — model deployment on AWS/Azure",
+        "10+ real industry projects & capstone",
+        "1-on-1 mentorship with industry data scientists",
+        "Resume building & LinkedIn optimization",
+        "100% Placement Assistance — 500+ partner companies"
+      ],
+      "duration": "6 Months",
+      "fee_range": "₹40,000 – ₹60,000",
+      "emi_available": true,
+      "target_audience": "Fresh graduates, IT professionals, engineers, MCA/BCA/BSc students, working professionals looking to switch to AI/ML roles",
+      "prerequisites": "Basic mathematics and logical thinking. No prior programming experience needed. 10+2 or graduation minimum.",
+      "certification": "PRAVESHA™ AI Certified Data Science Professional — recognized by 500+ hiring companies",
+      "career_opportunities": "Data Scientist, Machine Learning Engineer, AI Engineer, Data Analyst, Business Intelligence Developer, NLP Engineer, Computer Vision Engineer",
+      "placement_support": true,
+      "batch_types": [
+        "Classroom",
+        "Online Live",
+        "Hybrid",
+        "Weekend"
+      ],
+      "questions": [
+        "Are you looking to join our Data Science & AI course as a fresher or a working professional?",
+        "What specific goals or outcomes are you hoping to achieve through this training program?",
+        "How much time can you commit weekly for classes and practical assignments?",
+        "When are you planning to start your training session?"
+      ]
+    },
+    {
+      "code": "PROD002",
+      "name": "Full Stack Development",
+      "category": "Training",
+      "description": "PRAVESHA™ Full Stack Development is an intensive 5-month Software Development Program covering both frontend and backend technologies used in the modern web industry. Students learn HTML5, CSS3, JavaScript (ES6+), React.js with Redux and Hooks, Node.js, Express.js, REST APIs, GraphQL, MongoDB, MySQL, Git & GitHub version control, Docker basics, and AWS/Azure deployment. The program is structured as: Month 1–2 Frontend (HTML/CSS/JS/React), Month 3 Backend (Node.js/Express/APIs), Month 4 Databases & DevOps, Month 5 Final Project + Placement. Students build 5+ real-world projects including an e-commerce platform, social media app, and real-time chat application. This course is ideal for students, freshers, and professionals who want to become full-stack developers and get hired at top product companies or startups. Key selling points: Build production-ready apps, placement support with IT companies and startups, EMI available, batch options: Classroom, Online Live, Hybrid. Fee: ₹35,000 to ₹55,000 depending on mode. The AI agent should highlight: high demand for full-stack developers, salary range ₹4–20 LPA, zero to hero approach, free demo class, next batch starting soon.",
+      "key_features": [
+        "HTML5, CSS3, Flexbox, Grid & Responsive Design",
+        "JavaScript ES6+, TypeScript",
+        "React.js with Redux, Hooks & Context API",
+        "Node.js & Express.js backend development",
+        "REST API & GraphQL design",
+        "MongoDB, MySQL, Sequelize & Mongoose",
+        "Git, GitHub, Docker & CI/CD basics",
+        "AWS/Azure cloud deployment",
+        "5+ production-ready projects",
+        "100% Placement Assistance"
+      ],
+      "duration": "5 Months",
+      "fee_range": "₹35,000 – ₹55,000",
+      "emi_available": true,
+      "target_audience": "Students, freshers, and working professionals wanting to become full-stack developers or switch into software development",
+      "prerequisites": "Basic computer knowledge and logical thinking. No prior coding experience required. 10+2 or graduation.",
+      "certification": "PRAVESHA™ AI Certified Full Stack Developer — industry-recognized certificate",
+      "career_opportunities": "Full Stack Developer, Frontend Developer, Backend Developer, React Developer, Node.js Developer, Software Engineer at startups and MNCs",
+      "placement_support": true,
+      "batch_types": [
+        "Classroom",
+        "Online Live",
+        "Hybrid",
+        "Weekend"
+      ],
+      "questions": [
+        "Are you looking to join our Full Stack program as a fresher or a working professional?",
+        "Do you have any prior programming experience in languages like HTML, CSS, or JavaScript?",
+        "How many hours per week can you allocate for classes, labs, and self-study?",
+        "When are you planning to start the course?"
+      ]
+    },
+    {
+      "code": "PROD003",
+      "name": "Digital Marketing",
+      "category": "Training",
+      "description": "PRAVESHA™ Digital Marketing Certification Program is a 3-month comprehensive Marketing Certification Program covering all aspects of modern digital marketing. The curriculum includes: SEO (Search Engine Optimization), SEM & Google Ads, Social Media Marketing (Facebook, Instagram, LinkedIn, YouTube), Meta Ads (Facebook/Instagram advertising), Content Marketing & Copywriting, Email Marketing, WhatsApp Marketing, Google Analytics 4, Google Search Console, HubSpot CRM, Canva for design, and Influencer Marketing. Students run live ad campaigns with real budgets during the training. This course suits marketing professionals, business owners, freelancers, freshers, and anyone who wants to build a career in the booming digital marketing industry. Key selling points: learn to run ads with real ₹5,000 budget, get 5+ Google & Meta certifications, freelancing guidance included, placement support with agencies, EMI available. Fee: ₹20,000–₹30,000. The AI agent should highlight: digital marketing jobs growing 30% YoY, salary ₹3–15 LPA, freelance earning potential ₹50,000+/month, free demo class available, weekend batches for working professionals.",
+      "key_features": [
+        "SEO — On-page, Off-page & Technical SEO",
+        "Google Ads — Search, Display, Shopping & YouTube Ads",
+        "Meta Ads — Facebook & Instagram advertising",
+        "Social Media Marketing — organic & paid strategies",
+        "Content Marketing & Copywriting",
+        "Email & WhatsApp Marketing automation",
+        "Google Analytics 4 & Search Console",
+        "Live campaign management with real budget",
+        "5+ industry certifications (Google, Meta, HubSpot)",
+        "Freelancing & agency career guidance"
+      ],
+      "duration": "3 Months",
+      "fee_range": "₹20,000 – ₹30,000",
+      "emi_available": true,
+      "target_audience": "Marketing professionals, business owners, entrepreneurs, freshers, freelancers, and anyone wanting to grow a brand or career in digital marketing",
+      "prerequisites": "Basic internet and smartphone knowledge. No technical background needed. 10+2 minimum.",
+      "certification": "PRAVESHA™ AI Certified Digital Marketer + Google Ads + Google Analytics + Meta Blueprint certifications",
+      "career_opportunities": "Digital Marketing Manager, SEO Specialist, SEM/PPC Analyst, Social Media Manager, Content Marketer, Freelance Digital Marketer, Growth Hacker",
+      "placement_support": true,
+      "batch_types": [
+        "Online Live",
+        "Hybrid",
+        "Weekend"
+      ],
+      "questions": [
+        "What is your primary goal for learning digital marketing—career change, growth, or business marketing?",
+        "Do you have any basic familiarity with social media platforms or running online campaigns?",
+        "Are you looking for weekday or weekend batches to balance with your routine?",
+        "When would you like to enroll and start classes?"
+      ]
+    },
+    {
+      "code": "PROD004",
+      "name": "AWS Cloud",
+      "category": "Training",
+      "description": "PRAVESHA™ AWS Cloud Computing Program is an industry-ready 4-month Cloud Computing Program focused on Amazon Web Services — the world's #1 cloud platform used by 90% of Fortune 500 companies. The curriculum covers: AWS Core Services (EC2, S3, VPC, IAM, RDS, Route53), Lambda & Serverless Architecture, CloudFormation & Terraform (Infrastructure as Code), DevOps on AWS (CodePipeline, CodeBuild, CodeDeploy), Docker & Kubernetes on ECS/EKS, Cloud Security & Compliance, Cost Optimization, Monitoring with CloudWatch, and full preparation for AWS certification exams. Students get hands-on lab access on AWS Free Tier. This course is ideal for IT professionals, developers, system administrators, and engineers looking to transition into high-paying cloud roles. Key selling points: AWS certs doubles your salary, cloud jobs pay ₹8–35 LPA, dedicated cert prep (CCP + SAA exams covered), placement support with IT companies. Fee: ₹35,000–₹50,000, EMI available.",
+      "key_features": [
+        "AWS Core Services — EC2, S3, VPC, IAM, RDS, Route53",
+        "Lambda, API Gateway & Serverless Architecture",
+        "CloudFormation & Terraform — Infrastructure as Code",
+        "Docker & Kubernetes on ECS/EKS",
+        "DevOps on AWS — CodePipeline, CodeBuild, CodeDeploy",
+        "Cloud Security, IAM Policies & Compliance",
+        "Cost Optimization & AWS Billing Management",
+        "CloudWatch Monitoring & CloudTrail Auditing",
+        "AWS Certification prep — CCP & SAA exams",
+        "Hands-on labs on real AWS environment"
+      ],
+      "duration": "4 Months",
+      "fee_range": "₹35,000 – ₹50,000",
+      "emi_available": true,
+      "target_audience": "IT professionals, software developers, system administrators, network engineers, and freshers with basic IT knowledge looking to move to cloud roles",
+      "prerequisites": "Basic IT knowledge or any programming experience recommended. Linux fundamentals helpful but not mandatory.",
+      "certification": "AWS Certified Cloud Practitioner (CCP) + AWS Solutions Architect Associate (SAA) prep + PRAVESHA™ AI Cloud Certificate",
+      "career_opportunities": "Cloud Engineer, AWS Solutions Architect, DevOps Engineer, Cloud Consultant, Site Reliability Engineer, Cloud Security Engineer",
+      "placement_support": true,
+      "batch_types": [
+        "Online Live",
+        "Hybrid",
+        "Weekend"
+      ],
+      "questions": [
+        "Do you have a background in IT, system administration, or programming, or are you starting fresh?",
+        "Which specific AWS certification are you aiming to clear—Solutions Architect or Practitioner?",
+        "How much time can you dedicate weekly for cloud lab exercises and study?",
+        "When are you planning to start your cloud training?"
+      ]
+    },
+    {
+      "code": "PROD005",
+      "name": "Corporate Training",
+      "category": "Corporate",
+      "description": "PRAVESHA™ Corporate Training offers Customized Corporate Learning programs for organizations looking to upskill their teams. We design and deliver bespoke training programs in technology, leadership, data literacy, digital transformation, cloud adoption, cybersecurity awareness, and domain-specific skills. Training can be delivered on-site at the client's office, virtually via Zoom/Teams, or as intensive bootcamp workshops. We conduct a pre-training skill gap analysis, design a custom curriculum, deliver training in batches, and provide post-training assessments and reports. Minimum batch size: 10 participants. Maximum: 100+ participants per cohort. Popular topics: Python for Business Teams, AI & ML Awareness, Cloud Adoption (AWS/Azure), Cybersecurity Basics, Data Analytics with Excel/Power BI, Digital Marketing for Sales Teams, Leadership & Soft Skills. Pricing is on request based on number of participants, duration, and topics selected. The AI agent should highlight: customized curriculum, minimum 10 people per batch, on-site/virtual delivery, certificate of completion for all participants, quick turnaround time for proposal — ask the lead for their team size and training topic.",
+      "key_features": [
+        "Fully customized curriculum based on skill gap analysis",
+        "On-site delivery at client's office",
+        "Virtual training via Zoom/Microsoft Teams",
+        "Intensive workshops (1 day to 3 months)",
+        "Minimum 10 participants per batch",
+        "Pre & post training assessment with reports",
+        "Topics: Python, AI, Cloud, Cybersecurity, Digital Marketing, Data Analytics, Leadership",
+        "Certificate of completion for all participants",
+        "Dedicated corporate account manager",
+        "Quick proposal turnaround — within 48 hours"
+      ],
+      "duration": "Flexible — 1 Day to 3 Months (based on client requirements)",
+      "fee_range": "On Request (pricing per batch / per participant — contact for quote)",
+      "emi_available": false,
+      "target_audience": "HR departments, L&D teams, IT companies, banks, manufacturing companies, government organizations, startups wanting to upskill their workforce",
+      "prerequisites": "Defined by client requirements and the specific training topic chosen.",
+      "certification": "PRAVESHA™ AI Corporate Training Certificate of Completion — issued to each participant",
+      "career_opportunities": "Internal upskilling, career advancement, and digital transformation for organizations",
+      "placement_support": false,
+      "batch_types": [
+        "Classroom",
+        "Online Live",
+        "Hybrid"
+      ],
+      "questions": [
+        "Which specific technology or topic is your organization looking to upskill your team on?",
+        "What is the estimated size of the team or cohort that needs to be trained?",
+        "Do you prefer classroom training at your office, online live sessions, or a hybrid model?",
+        "What is your target timeline for starting this corporate training program?"
+      ]
+    },
+    {
+      "code": "PROD006",
+      "name": "LMS Platform",
+      "category": "Software",
+      "description": "PRAVESHA™ LMS (Learning Management System) Platform is a complete EdTech software solution for training institutes, colleges, and coaching centers to manage their entire online and offline education operations digitally. Key features include: Course creation and management, Student enrollment and portal, Live class scheduling (Zoom/Meet integration), Attendance tracking, Assignments and quiz management, Progress tracking and reports, Automated certificate generation, Faculty management, Fee collection and invoicing, Mobile app for students (Android & iOS), WhatsApp notifications, and Custom branding with your institute's logo and domain. Pricing: Monthly plan ₹5,000/month (up to 500 students), Annual plan ₹40,000/year (2 months free), Custom enterprise pricing for 1,000+ students. The AI agent should highlight: helps institutes go fully digital, saves admin time by 60%, students love the mobile app, white-label branding, quick 2-week setup, free demo available, and ask lead about their current student count and pain points.",
+      "key_features": [
+        "Course creation, upload & management",
+        "Student enrollment portal & dashboard",
+        "Live class integration — Zoom & Google Meet",
+        "Attendance tracking & reporting",
+        "Assignments, quizzes & automated grading",
+        "Certificate generation with digital signatures",
+        "Mobile app — Android & iOS (white-label)",
+        "Fee collection & invoice management",
+        "WhatsApp & SMS notifications",
+        "Custom branding — your logo, domain, colors",
+        "Multi-faculty & multi-branch support",
+        "Analytics & progress tracking reports"
+      ],
+      "duration": "Subscription-based — Monthly or Annual plans",
+      "fee_range": "₹5,000/month or ₹40,000/year (2 months free on annual plan)",
+      "emi_available": false,
+      "target_audience": "Training institutes, coaching centers, colleges, EdTech companies, schools offering online or blended education",
+      "prerequisites": "None — cloud-based, ready to use within 2 weeks of setup. No technical team required.",
+      "certification": "Not applicable — this is a software platform",
+      "career_opportunities": "Enables institutes to scale online education, automate operations, and improve student experience",
+      "placement_support": false,
+      "batch_types": [
+        "Online"
+      ],
+      "questions": [
+        "What is the name of your institute, and what is your current student enrollment count?",
+        "What are the biggest challenges you are facing with managing student portals or operations currently?",
+        "Would you like to schedule a free live demo to see the platform's white-label student mobile app?",
+        "How soon are you looking to go fully digital with your training operations?"
+      ]
+    },
+    {
+      "code": "PROD007",
+      "name": "PRAVESHA™ AI CRM",
+      "category": "Software",
+      "description": "PRAVESHA™ AI CRM is an AI-powered Lead Automation & CRM platform specifically built for training institutes and EdTech companies. It captures leads from all channels — Facebook Lead Ads, Instagram, Google Lead Forms, LinkedIn, website forms, WhatsApp click-to-chat, QR codes, walk-in registrations — and automates the entire admissions funnel from lead capture to enrollment. Core features: AI Lead Scoring (0–100 score), AI Calling Agent (auto-calls leads), WhatsApp drip campaigns, automated follow-up scheduling, counselor dashboard, admission pipeline (New → Contacted → Interested → Demo → Fee Discussion → Admitted), payment tracking, analytics dashboard with conversion reports, multi-branch support, and social media lead integration. Plans: Starter ₹8,000/month (500 leads), Growth ₹20,000/month (2,000 leads + AI calling), Enterprise ₹75,000/year (unlimited + dedicated support). The AI agent should highlight: saves 3 hours/day per counselor, increases admission conversion by 40%, AI automatically follows up with cold leads, integrates with Facebook/Instagram/Google in minutes, free trial available, and ask lead about their current lead volume per month and biggest challenge.",
+      "key_features": [
+        "Multi-channel lead capture — Facebook, Instagram, Google, WhatsApp, Website, Walk-in",
+        "AI Lead Scoring — 0 to 100 score based on behaviour & profile",
+        "AI Calling Agent — auto-calls leads, asks questions, records interest",
+        "WhatsApp drip campaigns & broadcast messaging",
+        "Automated follow-up scheduling & reminders",
+        "Admission pipeline — New → Contacted → Interested → Demo → Enrolled",
+        "Counselor dashboard & team management",
+        "Payment & fee collection tracking",
+        "Analytics — conversion reports, lead source ROI",
+        "Multi-branch support",
+        "Facebook, Instagram & Google Ads API integration",
+        "CRM mobile app for counselors on the go"
+      ],
+      "duration": "Subscription-based — Monthly or Annual plans",
+      "fee_range": "₹8,000/month (Starter) | ₹20,000/month (Growth) | ₹75,000/year (Enterprise)",
+      "emi_available": false,
+      "target_audience": "Training institutes, coaching centers, EdTech companies, universities with active lead generation wanting to automate admissions",
+      "prerequisites": "None — cloud-based SaaS, works on any device, no IT team required. Setup done by PRAVESHA™ team within 2 weeks.",
+      "certification": "Not applicable — this is a SaaS CRM platform",
+      "career_opportunities": "Automates admissions, increases conversions, and reduces manual follow-up work for counselors",
+      "placement_support": false,
+      "batch_types": [
+        "Online"
+      ],
+      "questions": [
+        "What is the current monthly volume of admission leads your institute generates?",
+        "What channels do you generate leads from—like Facebook, website, WhatsApp, or walk-ins?",
+        "Would you be interested in a free trial of our AI calling agent and automated scoring features?",
+        "How soon are you looking to implement a CRM solution to automate your team's counselor workload?"
+      ]
+    }
+  ],
+  "services": [
+    {
+      "code": "SER001",
+      "name": "Classroom Training",
+      "product": "Data Science & AI",
+      "type": "Classroom",
+      "description": "In-person classroom sessions at our campus with daily hands-on lab exercises, live doubt-clearing, and peer-group learning environment. Includes lab access Monday to Saturday.",
+      "duration": "6 Months, Mon–Sat (Morning / Evening batches)",
+      "fee": "₹55,000"
+    },
+    {
+      "code": "SER002",
+      "name": "Online Live Training",
+      "product": "Data Science & AI",
+      "type": "Online Live",
+      "description": "Live instructor-led sessions via Zoom/Google Meet with class recordings, virtual lab access, WhatsApp support group, and weekly 1-on-1 doubt sessions.",
+      "duration": "6 Months, Flexible timings",
+      "fee": "₹45,000"
+    },
+    {
+      "code": "SER003",
+      "name": "Hybrid Training",
+      "product": "Data Science & AI",
+      "type": "Hybrid",
+      "description": "Attend classroom sessions twice a week and join online live classes for remaining sessions — maximum flexibility for working professionals. Lab access on classroom days.",
+      "duration": "6 Months",
+      "fee": "₹50,000"
+    },
+    {
+      "code": "SER004",
+      "name": "Placement Assistance",
+      "product": "Data Science & AI",
+      "type": "Placement",
+      "description": "Dedicated placement cell: resume & LinkedIn profile building, mock technical and HR interviews, 500+ company tie-ups including TCS, Infosys, Wipro, Accenture, and AI-first startups. 90-day job guarantee support.",
+      "duration": "6 Months post-training",
+      "fee": "Included"
+    },
+    {
+      "code": "SER005",
+      "name": "Certification Support",
+      "product": "Data Science & AI",
+      "type": "Certification",
+      "description": "Guided prep for TensorFlow Developer Certificate, AWS ML Specialty, Google Data Analytics Professional, and IBM Data Science certification — with mock exams, study material, and exam booking support.",
+      "duration": "2 Months",
+      "fee": "₹5,000"
+    },
+    {
+      "code": "SER006",
+      "name": "Project Mentoring",
+      "product": "Data Science & AI",
+      "type": "Service",
+      "description": "1-on-1 mentorship sessions with industry-working data scientists for capstone and portfolio projects. Students present their final project to a panel of hiring managers from partner companies.",
+      "duration": "Throughout the course",
+      "fee": "Included"
+    },
+    {
+      "code": "SER007",
+      "name": "Classroom Training",
+      "product": "Full Stack Development",
+      "type": "Classroom",
+      "description": "In-person full stack development training with coding labs, daily code reviews, real-time project building, and faculty mentorship. Build 5 production-ready web apps during the course.",
+      "duration": "5 Months, Mon–Sat",
+      "fee": "₹50,000"
+    },
+    {
+      "code": "SER008",
+      "name": "Online Live Training",
+      "product": "Full Stack Development",
+      "type": "Online Live",
+      "description": "Live coding sessions with screen-sharing, GitHub-based project submissions, code reviews, WhatsApp group support, and session recordings for revision.",
+      "duration": "5 Months, Flexible",
+      "fee": "₹40,000"
+    },
+    {
+      "code": "SER009",
+      "name": "Hybrid Training",
+      "product": "Full Stack Development",
+      "type": "Hybrid",
+      "description": "Ideal for working professionals — classroom sessions on weekends + online live sessions on weekdays. Build the same 5 projects with flexibility.",
+      "duration": "5 Months",
+      "fee": "₹45,000"
+    },
+    {
+      "code": "SER010",
+      "name": "Placement Assistance",
+      "product": "Full Stack Development",
+      "type": "Placement",
+      "description": "End-to-end placement support: GitHub portfolio review, technical interview prep (DSA, system design, React/Node rounds), and referrals to 400+ product companies, IT firms, and startups.",
+      "duration": "Post-training",
+      "fee": "Included"
+    },
+    {
+      "code": "SER011",
+      "name": "Certification Support",
+      "product": "Full Stack Development",
+      "type": "Certification",
+      "description": "Preparation and guidance for Meta React Developer, MongoDB Developer, Node.js Application Developer, and AWS Developer Associate certifications.",
+      "duration": "1 Month",
+      "fee": "₹3,000"
+    },
+    {
+      "code": "SER012",
+      "name": "Project Mentoring",
+      "product": "Full Stack Development",
+      "type": "Service",
+      "description": "Mentored capstone project: build and deploy a full-stack application from scratch with guidance from senior developers. Deployed project added to your portfolio and GitHub.",
+      "duration": "Last 2 Months of course",
+      "fee": "Included"
+    },
+    {
+      "code": "SER013",
+      "name": "Online Live Training",
+      "product": "Digital Marketing",
+      "type": "Online Live",
+      "description": "Live digital marketing training covering Google Ads, Meta Ads, SEO, Social Media, Email & WhatsApp Marketing. Students manage live ad campaigns with a real ₹5,000 ad budget during training.",
+      "duration": "3 Months, Morning / Evening / Weekend batches",
+      "fee": "₹25,000"
+    },
+    {
+      "code": "SER014",
+      "name": "Hybrid Training",
+      "product": "Digital Marketing",
+      "type": "Hybrid",
+      "description": "Blended online learning + in-person workshops for hands-on ad campaign creation, competitor analysis, and content strategy execution.",
+      "duration": "3 Months",
+      "fee": "₹28,000"
+    },
+    {
+      "code": "SER015",
+      "name": "Placement Assistance",
+      "product": "Digital Marketing",
+      "type": "Placement",
+      "description": "Career support: digital marketing portfolio building, agency interview prep, freelancing setup guide (Upwork/Fiverr), connections to 200+ digital marketing agencies and companies.",
+      "duration": "Post-training",
+      "fee": "Included"
+    },
+    {
+      "code": "SER016",
+      "name": "Certification Support",
+      "product": "Digital Marketing",
+      "type": "Certification",
+      "description": "5+ certifications included: Google Ads Search, Google Ads Display, Google Analytics 4, Meta Blueprint, HubSpot Content Marketing, SEMrush SEO Fundamentals.",
+      "duration": "Ongoing during course",
+      "fee": "Included"
+    },
+    {
+      "code": "SER017",
+      "name": "Live Campaign Project",
+      "product": "Digital Marketing",
+      "type": "Service",
+      "description": "Students manage a live advertising campaign with a real ₹5,000 ad budget on Google Ads and Meta Ads — track performance, optimize bids, and present ROI report.",
+      "duration": "1 Month (Month 2 of training)",
+      "fee": "Included"
+    },
+    {
+      "code": "SER018",
+      "name": "Online Live Training",
+      "product": "AWS Cloud",
+      "type": "Online Live",
+      "description": "Live AWS training with hands-on labs on real AWS Free Tier, architecture design exercises, mock certification exams, and live Q&A with certified AWS architects.",
+      "duration": "4 Months, Flexible batches",
+      "fee": "₹45,000"
+    },
+    {
+      "code": "SER019",
+      "name": "Hybrid Training",
+      "product": "AWS Cloud",
+      "type": "Hybrid",
+      "description": "Weekend classroom workshops + online live weekday sessions for AWS training — includes lab-intensive sessions, real architecture design projects, and cert exam prep.",
+      "duration": "4 Months",
+      "fee": "₹48,000"
+    },
+    {
+      "code": "SER020",
+      "name": "Placement Assistance",
+      "product": "AWS Cloud",
+      "type": "Placement",
+      "description": "Cloud career support: LinkedIn profile for cloud roles, interview coaching for Solutions Architect and DevOps positions, referrals to IT companies, cloud consulting firms, and MNCs.",
+      "duration": "Post-training",
+      "fee": "Included"
+    },
+    {
+      "code": "SER021",
+      "name": "AWS Certification Prep",
+      "product": "AWS Cloud",
+      "type": "Certification",
+      "description": "Structured prep for AWS Certified Cloud Practitioner (CCP) and AWS Solutions Architect Associate (SAA) exams — includes 500+ practice questions, mock exams, and exam booking guidance.",
+      "duration": "Last Month of training",
+      "fee": "₹5,000"
+    },
+    {
+      "code": "SER022",
+      "name": "Cloud Architecture Project",
+      "product": "AWS Cloud",
+      "type": "Service",
+      "description": "Capstone project: design and deploy a complete scalable cloud architecture on AWS — auto-scaling EC2, load balancer, RDS database, S3 storage, CloudFront CDN, and monitoring with CloudWatch.",
+      "duration": "Last Month of training",
+      "fee": "Included"
+    },
+    {
+      "code": "SER023",
+      "name": "On-site Corporate Training",
+      "product": "Corporate Training",
+      "type": "Classroom",
+      "description": "Trainer visits the client's office to deliver customized training. Minimum 10 participants per batch. Topics tailored based on pre-training skill gap analysis. Certificate provided to all participants.",
+      "duration": "1 Day to 3 Months (customized)",
+      "fee": "On Request — contact for quote"
+    },
+    {
+      "code": "SER024",
+      "name": "Virtual Corporate Training",
+      "product": "Corporate Training",
+      "type": "Online Live",
+      "description": "Live online corporate training via Zoom or Microsoft Teams. Flexible scheduling across time zones and work shifts. LMS access for recordings and assignments provided to all participants.",
+      "duration": "Flexible",
+      "fee": "On Request — contact for quote"
+    },
+    {
+      "code": "SER025",
+      "name": "Workshop / Bootcamp",
+      "product": "Corporate Training",
+      "type": "Hybrid",
+      "description": "Intensive 1–5 day workshops on focused topics: AI in Business, Cloud Migration Readiness, DevOps Adoption, Data-Driven Decision Making, Cybersecurity Awareness, or custom topics.",
+      "duration": "1–5 Days",
+      "fee": "On Request — contact for quote"
+    },
+    {
+      "code": "SER026",
+      "name": "Skills Gap Assessment",
+      "product": "Corporate Training",
+      "type": "Service",
+      "description": "Pre-training competency assessment and post-training effectiveness evaluation. Detailed report on team skill levels, training ROI, and recommended learning paths for each participant.",
+      "duration": "1 Day",
+      "fee": "On Request — contact for quote"
+    },
+    {
+      "code": "SER027",
+      "name": "Monthly Subscription",
+      "product": "LMS Platform",
+      "type": "Service",
+      "description": "Full LMS Platform on monthly subscription — course management, student portal, live class integration, attendance, assessments, certificate generation, WhatsApp notifications. Up to 500 active students.",
+      "duration": "Monthly, auto-renewing",
+      "fee": "₹5,000/month"
+    },
+    {
+      "code": "SER028",
+      "name": "Annual Subscription",
+      "product": "LMS Platform",
+      "type": "Service",
+      "description": "Annual LMS plan with 2 months free (pay 10, get 12). Includes all features + priority support, custom branding with your domain, Zoom & Google Meet integration, and WhatsApp notifications.",
+      "duration": "12 Months",
+      "fee": "₹40,000/year"
+    },
+    {
+      "code": "SER029",
+      "name": "Custom LMS Setup",
+      "product": "LMS Platform",
+      "type": "Service",
+      "description": "One-time professional setup service: institute branding (logo, colors, domain), course migration from existing materials, faculty account creation, and 30-day onboarding support.",
+      "duration": "2 Weeks",
+      "fee": "₹15,000 one-time"
+    },
+    {
+      "code": "SER030",
+      "name": "Mobile App (White-label)",
+      "product": "LMS Platform",
+      "type": "Service",
+      "description": "White-label mobile app for Android & iOS with your institute name and logo. Students access courses, live classes, assignments, and certificates on their smartphone.",
+      "duration": "Included with Annual Plan",
+      "fee": "₹10,000/year or included in Annual Plan"
+    },
+    {
+      "code": "SER031",
+      "name": "Starter Plan",
+      "product": "PRAVESHA™ AI CRM",
+      "type": "Service",
+      "description": "CRM Starter: Lead management for up to 500 leads/month, WhatsApp notifications, basic follow-up automation, counselor dashboard, admission pipeline tracking, and email support. Ideal for small institutes.",
+      "duration": "Monthly subscription",
+      "fee": "₹8,000/month"
+    },
+    {
+      "code": "SER032",
+      "name": "Growth Plan",
+      "product": "PRAVESHA™ AI CRM",
+      "type": "Service",
+      "description": "CRM Growth: Everything in Starter + AI lead scoring (0–100), AI Calling Agent (100 calls/month), social media lead integration (Facebook/Instagram/Google Ads), analytics dashboard, and priority support. Up to 2,000 leads/month.",
+      "duration": "Monthly subscription",
+      "fee": "₹20,000/month"
+    },
+    {
+      "code": "SER033",
+      "name": "Enterprise Plan",
+      "product": "PRAVESHA™ AI CRM",
+      "type": "Service",
+      "description": "CRM Enterprise: Unlimited leads, unlimited AI calling, WhatsApp broadcast campaigns, full admission pipeline, multi-branch management, custom AI agent training, dedicated account manager, SLA-backed 24/7 support.",
+      "duration": "Annual subscription",
+      "fee": "₹75,000/year"
+    },
+    {
+      "code": "SER034",
+      "name": "CRM Setup & Onboarding",
+      "product": "PRAVESHA™ AI CRM",
+      "type": "Service",
+      "description": "Professional onboarding: data migration from existing system, Facebook/Instagram/Google Ads API integration, custom AI agent training, WhatsApp Business API setup, team training, and 30-day hypercare support.",
+      "duration": "2 Weeks",
+      "fee": "₹10,000 one-time"
+    },
+    {
+      "code": "SER035",
+      "name": "API Integration Service",
+      "product": "PRAVESHA™ AI CRM",
+      "type": "Service",
+      "description": "Custom API integrations with Facebook Lead Ads, Instagram, Google Lead Forms, LinkedIn Lead Gen, website contact forms, Indiamart, JustDial, and third-party ERPs or LMS platforms.",
+      "duration": "1 Week per integration",
+      "fee": "₹5,000 per integration"
+    }
+  ]
+}

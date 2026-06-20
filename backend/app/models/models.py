@@ -77,18 +77,30 @@ class Lead(Base):
     lead_type: Mapped[str] = mapped_column(String(20), default="form")
     job_role: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     years_experience: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    source: Mapped[str] = mapped_column(
-        Enum("inbound_call","outbound_call","web_form","whatsapp","sms","referral","social_media","manual"),
-        default="manual"
-    )
-    status: Mapped[str] = mapped_column(
-        Enum("new","contacted","qualified","demo_scheduled","proposal_sent","converted","lost","unresponsive"),
-        default="new"
-    )
+    # Contact
+    whatsapp_number: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    city: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    state: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    # Education & Career
+    qualification: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)  # 10th/12th/diploma/graduate/post_graduate/other
+    candidate_status: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)  # student/fresher/working_professional/job_seeker/business_owner
+    # Course Preferences
+    preferred_learning_mode: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)  # classroom/online_live/hybrid
+    preferred_batch: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)  # morning/afternoon/evening/weekend
+    joining_timeline: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)  # immediately/within_15_days/within_30_days/within_60_days
+    budget_range: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)  # below_10k/10k_25k/25k_50k/above_50k
+    # Admission & Payment
+    admission_status: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)  # new_enquiry/interested/follow_up_required/demo_scheduled/fee_discussion/admitted/not_interested
+    payment_status: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)  # pending/partial/completed
+    referred_by: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    remarks: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Source & Status — VARCHAR for flexibility as pipeline grows
+    source: Mapped[str] = mapped_column(String(50), default="manual")
+    status: Mapped[str] = mapped_column(String(50), default="new")
     assigned_to: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     tags: Mapped[list] = mapped_column(JSON, default=list)
     lead_score: Mapped[int] = mapped_column(Integer, default=0)
-    lead_temperature: Mapped[str] = mapped_column(Enum("hot", "warm", "cold"), default="warm")
+    lead_temperature: Mapped[str] = mapped_column(String(10), default="warm")
     campaign_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     utm_source: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
     utm_medium: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)

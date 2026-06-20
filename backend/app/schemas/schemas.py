@@ -82,11 +82,24 @@ class LeadCreate(BaseModel):
     full_name: str = Field(min_length=2, max_length=255)
     phone: str
     email: Optional[EmailStr] = None
+    whatsapp_number: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
     interest: Optional[str] = None
     description: Optional[str] = None
     lead_type: Optional[str] = "form"
     job_role: Optional[str] = None
     years_experience: Optional[float] = None
+    qualification: Optional[str] = None
+    candidate_status: Optional[str] = None
+    preferred_learning_mode: Optional[str] = None
+    preferred_batch: Optional[str] = None
+    joining_timeline: Optional[str] = None
+    budget_range: Optional[str] = None
+    admission_status: Optional[str] = None
+    payment_status: Optional[str] = None
+    referred_by: Optional[str] = None
+    remarks: Optional[str] = None
     source: Optional[str] = "manual"
     status: Optional[str] = "new"
     assigned_to: Optional[str] = None
@@ -117,11 +130,24 @@ class LeadUpdate(BaseModel):
     full_name: Optional[str] = None
     phone: Optional[str] = None
     email: Optional[EmailStr] = None
+    whatsapp_number: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
     interest: Optional[str] = None
     description: Optional[str] = None
     lead_type: Optional[str] = None
     job_role: Optional[str] = None
     years_experience: Optional[float] = None
+    qualification: Optional[str] = None
+    candidate_status: Optional[str] = None
+    preferred_learning_mode: Optional[str] = None
+    preferred_batch: Optional[str] = None
+    joining_timeline: Optional[str] = None
+    budget_range: Optional[str] = None
+    admission_status: Optional[str] = None
+    payment_status: Optional[str] = None
+    referred_by: Optional[str] = None
+    remarks: Optional[str] = None
     source: Optional[str] = None
     status: Optional[str] = None
     assigned_to: Optional[str] = None
@@ -141,11 +167,24 @@ class LeadOut(BaseModel):
     full_name: str
     phone: str
     email: Optional[str]
+    whatsapp_number: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
     interest: Optional[str]
     description: Optional[str]
     lead_type: str
     job_role: Optional[str]
     years_experience: Optional[float]
+    qualification: Optional[str] = None
+    candidate_status: Optional[str] = None
+    preferred_learning_mode: Optional[str] = None
+    preferred_batch: Optional[str] = None
+    joining_timeline: Optional[str] = None
+    budget_range: Optional[str] = None
+    admission_status: Optional[str] = None
+    payment_status: Optional[str] = None
+    referred_by: Optional[str] = None
+    remarks: Optional[str] = None
     source: str
     status: str
     assigned_to: Optional[str]

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import requests
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 from app.core.config import settings
 from app.core.logger import logger
@@ -11,6 +13,7 @@ from app.workers.celery_app import celery_app
 def _base_url() -> str:
     if settings.INTERNAL_API_BASE_URL:
         return settings.INTERNAL_API_BASE_URL.rstrip("/")
+    # Use http (not https) for localhost to avoid SSL certificate errors
     return f"http://localhost:{settings.PORT}"
 
 
@@ -27,12 +30,13 @@ def _post_internal_notification(payload: dict) -> dict:
         json=payload,
         headers=_headers(),
         timeout=20,
+        verify=False,
     )
     response.raise_for_status()
     return response.json()
 
 
-@celery_app.task(bind=True, max_retries=3, default_retry_delay=30)
+@celery_app.task(bind=True, max_retries=0)
 def trigger_outbound_call(self, lead_id: str, to_number: str, message: str | None = None):
     payload = {
         "lead_id": lead_id,
@@ -45,12 +49,14 @@ def trigger_outbound_call(self, lead_id: str, to_number: str, message: str | Non
             json=payload,
             headers=_headers(),
             timeout=20,
+            verify=False,
         )
         response.raise_for_status()
         return response.json()
     except Exception as exc:
         logger.error(f"trigger_outbound_call failed for lead={lead_id}: {exc}")
-        raise self.retry(exc=exc)
+        # Do NOT retry — each retry would place a real phone call to the lead
+        return {"error": str(exc), "lead_id": lead_id}
 
 
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=20)
@@ -125,6 +131,7 @@ def transcribe_call_recording(self, call_id: str):
             f"{_base_url()}/api/calls/internal/transcribe/{call_id}",
             headers=_headers(),
             timeout=30,
+            verify=False,
         )
         response.raise_for_status()
         return response.json()
@@ -141,6 +148,7 @@ def process_due_followups():
             f"{_base_url()}/api/leads/internal/process-followups",
             headers=_headers(),
             timeout=30,
+            verify=False,
         )
         response.raise_for_status()
         result = response.json()

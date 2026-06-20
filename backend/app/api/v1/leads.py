@@ -137,7 +137,7 @@ async def create_lead(
     ))
 
     await db.commit()
-    await db.refresh(lead, ["assigned_user"])
+    await db.refresh(lead, ["assigned_user", "created_at", "updated_at"])
     logger.info(f"Lead created: {lead.id} by user {current_user.id}")
 
     # Serialize now while all attributes are loaded — the second commit below
@@ -256,7 +256,7 @@ async def update_lead(
     ))
 
     await db.commit()
-    await db.refresh(lead, ["assigned_user"])
+    await db.refresh(lead, ["assigned_user", "created_at", "updated_at"])
     return LeadOut.model_validate(lead, from_attributes=True)
 
 
