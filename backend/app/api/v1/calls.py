@@ -1352,6 +1352,11 @@ async def list_calls(
             await _import_recent_twilio_calls(db, client, limit=min(max(page_size * 2, 20), 50))
         except Exception as exc:
             logger.warning(f"Twilio import skipped: {exc}")
+            # Roll back so the session is clean for the read query below.
+            try:
+                await db.rollback()
+            except Exception:
+                pass
 
     query = select(Call)
 
@@ -1374,6 +1379,11 @@ async def list_calls(
 
     # Refresh the most recent calls only — syncing all page_size calls would make one
     # blocking Twilio API call per row, easily timing out at page_size=100.
+    #
+    # CockroachDB can raise WriteTooOldError / SerializationError when a concurrent
+    # Twilio webhook writes to the same call row.  If that happens we roll back the
+    # session (required before it can be reused) and re-fetch the calls so that Pydantic
+    # can still read clean ORM objects.
     if twilio_live_mode and page == 1:
         try:
             client = _twilio_client()
@@ -1390,7 +1400,26 @@ async def list_calls(
             if changed:
                 await db.commit()
         except Exception as exc:
-            logger.warning(f"Twilio sync skipped: {exc}")
+            logger.warning(f"Twilio sync skipped (will rollback and re-fetch): {exc}")
+            # The session may be in PendingRollbackError state — always rollback so we
+            # can still return the original page of calls.
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+            # Re-fetch calls with a clean session state so Pydantic can access attributes.
+            try:
+                fresh_q = select(Call)
+                if status:
+                    fresh_q = fresh_q.where(Call.status == status)
+                if direction:
+                    fresh_q = fresh_q.where(Call.direction == direction)
+                if lead_id:
+                    fresh_q = fresh_q.where(Call.lead_id == lead_id)
+                fresh_q = fresh_q.order_by(Call.created_at.desc(), Call.id.desc()).offset(offset).limit(page_size)
+                calls = (await db.execute(fresh_q)).scalars().all()
+            except Exception as refetch_exc:
+                logger.warning(f"Re-fetch after rollback failed: {refetch_exc}")
 
     return {
         "total": total,
