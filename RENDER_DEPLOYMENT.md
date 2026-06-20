@@ -95,7 +95,7 @@ You need a worker process running to handle Twilio calls, text transcripts, and 
 3. Configure the settings:
    - **Name**: `crm-frontend`
    - **Root Directory**: `frontend`
-   - **Build Command**: `npm run build`
+   - **Build Command**: `npm install && npm run build`
    - **Publish Directory**: `dist`
 4. Add the following **Environment Variables**:
 
