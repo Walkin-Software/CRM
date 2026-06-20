@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, func
+from sqlalchemy import select, func, cast, Numeric
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -36,7 +36,7 @@ async def customer_stats(
     month_start = datetime.combine(date.today().replace(day=1), datetime.min.time()).replace(tzinfo=timezone.utc)
     mrr_cents = (
         await db.execute(
-            select(func.coalesce(func.sum(Transaction.amount_cents), 0)).where(
+            select(func.coalesce(func.sum(Transaction.amount_cents), cast(0, Numeric))).where(
                 Transaction.status == "completed",
                 Transaction.created_at >= month_start,
             )
@@ -54,8 +54,8 @@ async def customer_stats(
 
     return {
         "active_contracts": total,
-        "total_mrr_inr": mrr_cents / 100,
-        "total_mrr_formatted": f"₹{mrr_cents / 100:,.0f}",
+        "total_mrr_inr": float(mrr_cents or 0) / 100,
+        "total_mrr_formatted": f"₹{float(mrr_cents or 0) / 100:,.0f}",
         "vip_customers": hot_customers,
         "satisfaction_score": 92,  # Placeholder — extend with ratings model later
     }

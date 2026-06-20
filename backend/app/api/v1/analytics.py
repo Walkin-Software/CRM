@@ -7,7 +7,7 @@ from __future__ import annotations
 from datetime import datetime, date, timedelta, timezone
 from typing import Optional
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select, func, and_, case
+from sqlalchemy import select, func, and_, case, cast, Numeric
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -50,15 +50,14 @@ async def analytics_overview(
     thirty_days_ago = _days_ago(30)
     today = _today_start()
 
-    # ── Revenue ──────────────────────────────────────────────
     revenue_cents = (
         await db.execute(
-            select(func.coalesce(func.sum(Transaction.amount_cents), 0)).where(
+            select(func.coalesce(func.sum(Transaction.amount_cents), cast(0, Numeric))).where(
                 Transaction.status == "completed"
             )
         )
     ).scalar_one()
-    total_revenue_inr = revenue_cents / 100
+    total_revenue_inr = float(revenue_cents or 0) / 100
 
     # ── Leads ────────────────────────────────────────────────
     total_leads = (await db.execute(select(func.count(Lead.id)))).scalar_one()
@@ -106,12 +105,12 @@ async def analytics_overview(
     hour_rows = (
         await db.execute(
             select(
-                func.hour(Call.created_at).label("hour"),
+                func.extract('hour', Call.created_at).label("hour"),
                 func.count(Call.id).label("count"),
             )
             .where(Call.created_at >= thirty_days_ago)
-            .group_by(func.hour(Call.created_at))
-            .order_by(func.hour(Call.created_at))
+            .group_by(func.extract('hour', Call.created_at))
+            .order_by(func.extract('hour', Call.created_at))
         )
     ).all()
     hourly_calls = [
@@ -206,23 +205,23 @@ async def calls_heatmap(
     rows = (
         await db.execute(
             select(
-                func.dayofweek(Call.created_at).label("dow"),
-                func.hour(Call.created_at).label("hour"),
+                func.extract('dow', Call.created_at).label("dow"),
+                func.extract('hour', Call.created_at).label("hour"),
                 func.count(Call.id).label("count"),
             )
             .where(Call.created_at >= _days_ago(90))
             .group_by(
-                func.dayofweek(Call.created_at),
-                func.hour(Call.created_at),
+                func.extract('dow', Call.created_at),
+                func.extract('hour', Call.created_at),
             )
         )
     ).all()
 
-    # MySQL DAYOFWEEK: 1=Sun…7=Sat — convert to 0=Mon…6=Sun
+    # PostgreSQL DOW: 0=Sun, 1=Mon, ..., 6=Sat — convert to 0=Mon…6=Sun
     matrix: list[list[int]] = [[0] * 24 for _ in range(7)]
-    for dow_mysql, hour, count in rows:
-        # dow_mysql: 1=Sun, 2=Mon, …, 7=Sat → 0=Mon…6=Sun
-        day_idx = (dow_mysql - 2) % 7
+    for dow_pg, hour, count in rows:
+        # dow_pg: 0=Sun, 1=Mon, …, 6=Sat → 0=Mon…6=Sun
+        day_idx = (int(dow_pg) - 1) % 7
         matrix[day_idx][int(hour)] = count
 
     result = {"matrix": matrix}
