@@ -397,3 +397,80 @@ class JobApplication(Base):
 
     student: Mapped["Student"] = relationship("Student", back_populates="applications")
     job: Mapped["JobPosting"] = relationship("JobPosting", back_populates="applications")
+
+
+# ─── Support Tickets ──────────────────────────────────────────
+
+class SupportTicket(Base):
+    __tablename__ = "support_tickets"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    subject: Mapped[str] = mapped_column(String(500), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    customer_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    customer_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    lead_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("leads.id", ondelete="SET NULL"), nullable=True)
+    priority: Mapped[str] = mapped_column(Enum("Low", "Medium", "High"), default="Medium")
+    status: Mapped[str] = mapped_column(Enum("Open", "In Progress", "Resolved", "Closed"), default="Open")
+    assigned_to: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    sla_due_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+# ─── Visitor Sessions ─────────────────────────────────────────
+
+class VisitorSession(Base):
+    __tablename__ = "visitor_sessions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    session_token: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
+    ip_address: Mapped[Optional[str]] = mapped_column(String(45), nullable=True)
+    location: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    country: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    city: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    isp: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    coordinates: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    source: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    current_page: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    browser: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    device: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    os: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    screen: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    journey: Mapped[list] = mapped_column(JSON, default=list)
+    duration_seconds: Mapped[int] = mapped_column(Integer, default=0)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    converted_lead_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("leads.id", ondelete="SET NULL"), nullable=True)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# ─── Knowledge Documents (AI Training) ───────────────────────
+
+class KnowledgeDocument(Base):
+    __tablename__ = "knowledge_documents"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    name: Mapped[str] = mapped_column(String(500), nullable=False)
+    file_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    file_size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    file_type: Mapped[str] = mapped_column(String(20), default="pdf")  # pdf, txt, csv
+    status: Mapped[str] = mapped_column(Enum("uploading", "training", "trained", "failed"), default="uploading")
+    uploaded_by: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    chunk_count: Mapped[int] = mapped_column(Integer, default=0)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+# ─── AI Agent Config ─────────────────────────────────────────
+
+class AIAgentConfig(Base):
+    __tablename__ = "ai_agent_configs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    config_key: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    config_value: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_by: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

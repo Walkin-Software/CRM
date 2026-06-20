@@ -18,6 +18,13 @@ import FollowUpQueue from './pages/FollowUpQueue';
 import WhatsAppChat from './pages/WhatsAppChat';
 import PublicIntakeForm from './pages/PublicIntakeForm';
 
+// Redesigned new pages
+import VisitorIntelligence from './pages/VisitorIntelligence';
+import SocialLeads from './pages/SocialLeads';
+import AITraining from './pages/AITraining';
+import Customers from './pages/Customers';
+import CustomerTickets from './pages/CustomerTickets';
+
 function PrivateRoute({ children }) {
   const { user, loading } = useAuth();
   if (loading) return (
@@ -55,8 +62,13 @@ export default function App() {
             </PrivateRoute>
           }>
             <Route index                  element={<Dashboard />} />
+            <Route path="visitors"        element={<VisitorIntelligence />} />
+            <Route path="social-leads"    element={<SocialLeads />} />
+            <Route path="ai-training"     element={<AITraining />} />
             <Route path="leads"           element={<Leads />} />
             <Route path="leads/:id"       element={<LeadDetail />} />
+            <Route path="customers"       element={<Customers />} />
+            <Route path="tickets"         element={<CustomerTickets />} />
             <Route path="calls"           element={<CallLogs />} />
             <Route path="schedule"        element={<Scheduling />} />
             <Route path="analytics"       element={<Analytics />} />

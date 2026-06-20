@@ -228,3 +228,79 @@ async def get_transaction(
     if not txn:
         raise HTTPException(status_code=404, detail="Transaction not found")
     return txn
+
+
+# ── Frontend-compatible aliases ───────────────────────────────────────────────
+
+class CheckoutRequest(BaseModel):
+    lead_id: str
+    amount_inr: float
+    description: Optional[str] = None
+
+
+@router.post("/checkout")
+async def checkout(
+    payload: CheckoutRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Alias for /create-intent — used by the frontend paymentsAPI.checkout()."""
+    return await create_payment_intent(
+        CreatePaymentIntentRequest(
+            lead_id=payload.lead_id,
+            amount_inr=payload.amount_inr,
+            description=payload.description,
+        ),
+        db=db,
+        current_user=current_user,
+    )
+
+
+class RefundRequest(BaseModel):
+    transaction_id: str
+    amount_inr: Optional[float] = None
+    reason: Optional[str] = None
+
+
+@router.post("/refund")
+async def refund_payment(
+    payload: RefundRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Issue a full or partial refund for a completed transaction."""
+    txn = (await db.execute(select(Transaction).where(Transaction.id == payload.transaction_id))).scalar_one_or_none()
+    if not txn:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    if txn.status not in {"completed"}:
+        raise HTTPException(status_code=400, detail=f"Cannot refund a transaction with status '{txn.status}'")
+
+    refund_cents = int(round((payload.amount_inr or txn.amount_cents / 100) * 100))
+    if refund_cents > txn.amount_cents:
+        raise HTTPException(status_code=400, detail="Refund amount exceeds original payment")
+
+    if not settings.MOCK_SERVICES and settings.STRIPE_SECRET_KEY and txn.stripe_payment_intent_id:
+        try:
+            stripe = _stripe_client()
+            stripe.Refund.create(
+                payment_intent=txn.stripe_payment_intent_id,
+                amount=refund_cents,
+                reason="requested_by_customer",
+            )
+        except Exception as exc:
+            logger.error(f"Stripe refund failed for txn={txn.id}: {exc}")
+            raise HTTPException(status_code=502, detail=f"Stripe error: {exc}")
+
+    txn.refund_amount_cents = refund_cents
+    txn.refunded_at = datetime.now(timezone.utc)
+    txn.status = "refunded" if refund_cents >= txn.amount_cents else "partially_refunded"
+    await db.commit()
+    await db.refresh(txn)
+
+    return {
+        "transaction_id": txn.id,
+        "refund_amount_inr": refund_cents / 100,
+        "status": txn.status,
+        "mock": settings.MOCK_SERVICES,
+    }
+

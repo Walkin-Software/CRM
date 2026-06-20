@@ -112,12 +112,15 @@ export const schedulingAPI = {
 
 // Notifications
 export const notificationsAPI = {
-  send:         (data) => api.post('/notifications/send', data),
+  send:            (data) => api.post('/notifications/send', data),
   generateAndSend: (data) => api.post('/notifications/generate-and-send', data),
-  sendTemplate: (data) => api.post('/notifications/send/template', data),
-  sendBulk:     (data) => api.post('/notifications/send/bulk', data),
-  templates:    ()     => api.get('/notifications/templates'),
-  history:      (params) => api.get('/notifications/history', { params }),
+  sendTemplate:    (data) => api.post('/notifications/send/template', data),
+  sendBulk:        (data) => api.post('/notifications/send/bulk', data),
+  templates:       ()     => api.get('/notifications/templates'),
+  history:         (params) => api.get('/notifications/history', { params }),
+  unreadCount:     ()     => api.get('/notifications/unread-count'),
+  markReadAll:     ()     => api.post('/notifications/read-all'),
+  markRead:        (id)     => api.patch(`/notifications/${id}/read`),
 };
 
 export const aiAPI = {
@@ -142,6 +145,59 @@ export const paymentsAPI = {
 
 // Admin
 export const adminAPI = {
-  dashboardStats: () => api.get('/admin/dashboard/stats'),
-  auditLogs:      (params) => api.get('/admin/audit-logs', { params }),
+  dashboardStats:    ()       => api.get('/admin/dashboard/stats'),
+  dashboardActivity: (days)   => api.get('/admin/dashboard/activity', { params: { days: days ?? 14 } }),
+  auditLogs:         (params) => api.get('/admin/audit-logs', { params }),
 };
+
+// Integrations
+export const integrationsAPI = {
+  scrapeSample: () => api.post('/integrations/scrape/sample'),
+};
+
+// Customers
+export const customersAPI = {
+  stats:  ()           => api.get('/customers/stats'),
+  list:   (params)     => api.get('/customers', { params }),
+  get:    (id)         => api.get(`/customers/${id}`),
+  update: (id, data)   => api.patch(`/customers/${id}`, data),
+};
+
+// Support Tickets
+export const ticketsAPI = {
+  stats:   ()           => api.get('/tickets/stats'),
+  list:    (params)     => api.get('/tickets', { params }),
+  get:     (id)         => api.get(`/tickets/${id}`),
+  create:  (data)       => api.post('/tickets', data),
+  update:  (id, data)   => api.patch(`/tickets/${id}`, data),
+  delete:  (id)         => api.delete(`/tickets/${id}`),
+};
+
+// Visitor Intelligence
+export const visitorsAPI = {
+  list:    (params)           => api.get('/visitors', { params }),
+  track:   (data)             => api.post('/visitors/track', data),
+  convert: (sessionId, data)  => api.post(`/visitors/${sessionId}/convert`, data),
+};
+
+// AI Training
+export const aiTrainingAPI = {
+  documents: {
+    list:   ()          => api.get('/ai-training/documents'),
+    upload: (formData)  => api.post('/ai-training/documents', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    }),
+    delete: (id)        => api.delete(`/ai-training/documents/${id}`),
+  },
+  config: {
+    get:  ()      => api.get('/ai-training/config'),
+    save: (data)  => api.post('/ai-training/config', data),
+  },
+  chat: (data) => api.post('/ai-training/chat', data),
+};
+
+// AI Copilot (sidebar assistant)
+export const copilotAPI = {
+  chat: (data) => api.post('/copilot/chat', data),
+};
+

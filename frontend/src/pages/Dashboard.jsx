@@ -1,396 +1,293 @@
-import { useEffect, useState } from 'react';
-import { 
-  Users, Phone, TrendingUp, Clock, MessageSquare, Mail,
-  ArrowUpRight
+﻿import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import {
+  Users, Eye, Sparkles, Trophy, DollarSign, Ticket,
+  RefreshCw, ArrowRight, Brain, Clock, Calendar
 } from 'lucide-react';
-import { 
+import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer, BarChart, Bar, Cell 
+  Tooltip, ResponsiveContainer, BarChart, Bar
 } from 'recharts';
-import { leadsAPI, callsAPI, notificationsAPI } from '../lib/api';
+import {
+  adminAPI, leadsAPI, analyticsAPI, customersAPI,
+  ticketsAPI, visitorsAPI, aiTrainingAPI,
+} from '../lib/api';
 import { toast } from 'react-hot-toast';
 
-const COLORS = ['#6366f1', '#8b5cf6', '#06b6d4', '#10b981', '#f59e0b'];
-
-function toDate(value) {
-  return value ? new Date(value) : null;
-}
-
-function isSameDay(a, b) {
-  return a.getFullYear() === b.getFullYear()
-    && a.getMonth() === b.getMonth()
-    && a.getDate() === b.getDate();
-}
-
-function daysAgoDate(daysAgo) {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  d.setDate(d.getDate() - daysAgo);
-  return d;
-}
-
-function formatRelativeTime(value) {
-  const d = toDate(value);
-  if (!d) return '--';
-  const diffMs = Date.now() - d.getTime();
-  const mins = Math.floor(diffMs / 60000);
-  if (mins < 1) return 'Just now';
-  if (mins < 60) return `${mins} min ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs} hr ago`;
-  const days = Math.floor(hrs / 24);
-  return `${days} day ago`;
+function KPI({ label, value, subtitle, icon, color, bgColor }) {
+  return (
+    <div className="premium-kpi-card">
+      <div className="kpi-header">
+        <span className="kpi-title">{label}</span>
+        <div className="kpi-icon-container" style={{ background: bgColor, color }}>
+          {icon}
+        </div>
+      </div>
+      <div className="kpi-content">
+        <span className="kpi-value">{value}</span>
+        <span className="kpi-trend" style={{ color: 'var(--text-4)' }}>{subtitle}</span>
+      </div>
+    </div>
+  );
 }
 
 export default function Dashboard() {
-  const [stats, setStats] = useState(null);
-  const [dailyData, setDailyData] = useState([]);
-  const [statusData, setStatusData] = useState([]);
-  const [recentLeads, setRecentLeads] = useState([]);
-  const [recentDispatches, setRecentDispatches] = useState([]);
+  const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
+  const [stats, setStats] = useState(null);
+  const [activity, setActivity] = useState([]);
+  const [recentLeads, setRecentLeads] = useState([]);
+  const [overview, setOverview] = useState(null);
+  const [funnel, setFunnel] = useState([]);
+  const [customerStats, setCustomerStats] = useState(null);
+  const [ticketStats, setTicketStats] = useState(null);
+  const [ticketItems, setTicketItems] = useState([]);
+  const [activeVisitors, setActiveVisitors] = useState(0);
+  const [trainingDocs, setTrainingDocs] = useState([]);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const [
+        statsRes,
+        activityRes,
+        leadsRes,
+        overviewRes,
+        funnelRes,
+        customersStatsRes,
+        ticketsStatsRes,
+        ticketsListRes,
+        visitorsRes,
+        docsRes,
+      ] = await Promise.allSettled([
+        adminAPI.dashboardStats(),
+        adminAPI.dashboardActivity(14),
+        leadsAPI.list({ page: 1, page_size: 8 }),
+        analyticsAPI.overview(),
+        analyticsAPI.funnel(),
+        customersAPI.stats(),
+        ticketsAPI.stats(),
+        ticketsAPI.list({ page: 1, page_size: 5 }),
+        visitorsAPI.list({ active_only: true }),
+        aiTrainingAPI.documents.list(),
+      ]);
+
+      if (statsRes.status === 'fulfilled') setStats(statsRes.value.data);
+      if (activityRes.status === 'fulfilled') {
+        const items = activityRes.value.data?.items || [];
+        setActivity(items.map((p) => ({ ...p, label: new Date(p.date).toLocaleDateString('en-US', { day: 'numeric', month: 'short' }) })));
+      }
+      if (leadsRes.status === 'fulfilled') setRecentLeads(leadsRes.value.data?.items || []);
+      if (overviewRes.status === 'fulfilled') setOverview(overviewRes.value.data || {});
+      if (funnelRes.status === 'fulfilled') setFunnel(funnelRes.value.data?.funnel || []);
+      if (customersStatsRes.status === 'fulfilled') setCustomerStats(customersStatsRes.value.data || {});
+      if (ticketsStatsRes.status === 'fulfilled') setTicketStats(ticketsStatsRes.value.data || {});
+      if (ticketsListRes.status === 'fulfilled') setTicketItems(ticketsListRes.value.data?.items || []);
+      if (visitorsRes.status === 'fulfilled') {
+        const sessions = visitorsRes.value.data?.sessions || visitorsRes.value.data?.items || [];
+        setActiveVisitors(sessions.filter((s) => s.is_active).length);
+      }
+      if (docsRes.status === 'fulfilled') {
+        const payload = docsRes.value.data;
+        const docs = Array.isArray(payload) ? payload : (payload?.documents || payload?.items || []);
+        setTrainingDocs(Array.isArray(docs) ? docs : []);
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error('Failed to load dashboard data');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    async function fetchAllWithPagination(apiListMethod) {
-      const pageSize = 100;
-      let page = 1;
-      const all = [];
-
-      while (true) {
-        const res = await apiListMethod({ page, page_size: pageSize });
-        const items = res.data?.items || [];
-        all.push(...items);
-        if (items.length < pageSize) break;
-        page += 1;
-        if (page > 100) break;
-      }
-
-      return all;
-    }
-
-    async function fetchData() {
-      try {
-        const [leads, calls] = await Promise.all([
-          fetchAllWithPagination(leadsAPI.list),
-          fetchAllWithPagination(callsAPI.list),
-        ]);
-
-        try {
-          const historyRes = await notificationsAPI.history({ page: 1, page_size: 6 });
-          setRecentDispatches(historyRes.data?.items || []);
-        } catch {
-          setRecentDispatches([]);
-        }
-
-        const today = new Date();
-        const callsToday = calls.filter((c) => {
-          const dt = toDate(c.created_at);
-          return dt ? isSameDay(dt, today) : false;
-        }).length;
-
-        const converted = leads.filter((l) => l.status === 'converted').length;
-        const conversionRate = leads.length ? Number(((converted / leads.length) * 100).toFixed(2)) : 0;
-
-        const answeredCalls = calls.filter(
-          (c) => (c.status === 'answered' || c.status === 'completed') && Number(c.duration_seconds || 0) > 0
-        );
-        const avgCallDurationSeconds = answeredCalls.length
-          ? Number((answeredCalls.reduce((acc, c) => acc + Number(c.duration_seconds || 0), 0) / answeredCalls.length).toFixed(1))
-          : 0;
-
-        const current7Start = daysAgoDate(6);
-        const previous7Start = daysAgoDate(13);
-        const previous7End = daysAgoDate(7);
-
-        const current7Leads = leads.filter((l) => {
-          const dt = toDate(l.created_at);
-          return dt && dt >= current7Start;
-        }).length;
-        const previous7Leads = leads.filter((l) => {
-          const dt = toDate(l.created_at);
-          return dt && dt >= previous7Start && dt < previous7End;
-        }).length;
-
-        const current7Calls = calls.filter((c) => {
-          const dt = toDate(c.created_at);
-          return dt && dt >= current7Start;
-        }).length;
-        const previous7Calls = calls.filter((c) => {
-          const dt = toDate(c.created_at);
-          return dt && dt >= previous7Start && dt < previous7End;
-        }).length;
-
-        const leadsDeltaPct = previous7Leads > 0
-          ? Number((((current7Leads - previous7Leads) / previous7Leads) * 100).toFixed(1))
-          : (current7Leads > 0 ? 100 : 0);
-
-        const callsDeltaPct = previous7Calls > 0
-          ? Number((((current7Calls - previous7Calls) / previous7Calls) * 100).toFixed(1))
-          : (current7Calls > 0 ? 100 : 0);
-
-        setStats({
-          total_leads: leads.length,
-          total_calls_today: callsToday,
-          conversion_rate: conversionRate,
-          avg_call_duration_seconds: avgCallDurationSeconds,
-          leads_delta_pct: leadsDeltaPct,
-          calls_delta_pct: callsDeltaPct,
-        });
-
-        const dayPoints = [];
-        for (let i = 13; i >= 0; i -= 1) {
-          const day = daysAgoDate(i);
-          const leadsCount = leads.filter((l) => {
-            const dt = toDate(l.created_at);
-            return dt ? isSameDay(dt, day) : false;
-          }).length;
-          const callsCount = calls.filter((c) => {
-            const dt = toDate(c.created_at);
-            return dt ? isSameDay(dt, day) : false;
-          }).length;
-
-          dayPoints.push({
-            date: day.toISOString(),
-            leads: leadsCount,
-            calls: callsCount,
-          });
-        }
-        setDailyData(dayPoints);
-
-        const statusMap = {};
-        leads.forEach((lead) => {
-          const key = lead.status || 'unknown';
-          statusMap[key] = (statusMap[key] || 0) + 1;
-        });
-
-        setStatusData(
-          Object.entries(statusMap)
-            .map(([name, val]) => ({ name: name.replace('_', ' '), val }))
-            .sort((a, b) => b.val - a.val)
-            .slice(0, 6)
-        );
-
-        setRecentLeads(
-          [...leads]
-            .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
-            .slice(0, 6)
-        );
-      } catch (err) {
-        console.error('Failed to fetch dashboard data', err);
-        toast.error('Failed to load dashboard data');
-      } finally {
-        setLoading(false);
-      }
-    }
-    fetchData();
+    load();
   }, []);
 
-  if (loading) return <div className="skeleton" style={{ height: '400px' }} />;
+  const convertedCount = useMemo(() => {
+    const stage = (funnel || []).find((f) => (f.stage || '').toLowerCase() === 'converted');
+    return stage?.count || 0;
+  }, [funnel]);
+
+  const customerRows = useMemo(() => recentLeads.filter((l) => l.status === 'converted').slice(0, 5), [recentLeads]);
+
+  if (loading) {
+    return (
+      <div className="flex-col gap-6">
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 10 }}>
+          {[1, 2, 3, 4, 5, 6].map((i) => <div key={i} className="skeleton" style={{ height: 108, borderRadius: 12 }} />)}
+        </div>
+        <div className="skeleton" style={{ height: 320 }} />
+      </div>
+    );
+  }
 
   return (
-    <div className="flex-col gap-6">
-      {/* ── Stats Overview ──────────────────────────────────── */}
-      <div className="stats-grid">
-        <div className="stat-card">
-          <div className="stat-icon" style={{ background: 'rgba(99,102,241,0.1)', color: '#6366f1' }}>
-            <Users size={20} />
-          </div>
-          <div className="stat-label">Total Leads</div>
-          <div className="stat-value">{stats?.total_leads || 0}</div>
-          <div className={`stat-change ${Number(stats?.leads_delta_pct || 0) >= 0 ? 'up' : 'down'}`}>
-            <ArrowUpRight size={14} style={{ marginBottom: '-2px' }} /> {Math.abs(stats?.leads_delta_pct || 0)}% vs prev 7 days
-          </div>
+    <div className="dashboard-content-layout">
+      <div className="page-header" style={{ marginBottom: 12 }}>
+        <div>
+          <h1 className="page-title" style={{ fontSize: 18, fontWeight: 800 }}>Business Dashboard</h1>
+          <p className="page-subtitle" style={{ fontSize: 12 }}>Live CRM metrics across leads, customers, tickets, visitors, and AI training.</p>
         </div>
-
-        <div className="stat-card">
-          <div className="stat-icon" style={{ background: 'rgba(6,182,212,0.1)', color: '#06b6d4' }}>
-            <Phone size={20} />
-          </div>
-          <div className="stat-label">Calls Today</div>
-          <div className="stat-value">{stats?.total_calls_today || 0}</div>
-          <div className={`stat-change ${Number(stats?.calls_delta_pct || 0) >= 0 ? 'up' : 'down'}`}>
-            <ArrowUpRight size={14} style={{ marginBottom: '-2px' }} /> {Math.abs(stats?.calls_delta_pct || 0)}% vs prev 7 days
-          </div>
-        </div>
-
-        <div className="stat-card">
-          <div className="stat-icon" style={{ background: 'rgba(16,185,129,0.1)', color: '#10b981' }}>
-            <TrendingUp size={20} />
-          </div>
-          <div className="stat-label">Conv. Rate</div>
-          <div className="stat-value">{stats?.conversion_rate || 0}%</div>
-          <div className="stat-change up">
-            <ArrowUpRight size={14} style={{ marginBottom: '-2px' }} /> based on converted leads
-          </div>
-        </div>
-
-        <div className="stat-card">
-          <div className="stat-icon" style={{ background: 'rgba(139,92,246,0.1)', color: '#8b5cf6' }}>
-            <Clock size={20} />
-          </div>
-          <div className="stat-label">Avg. Duration</div>
-          <div className="stat-value">{stats?.avg_call_duration_seconds || 0}s</div>
-          <div className="stat-change up">
-            <ArrowUpRight size={14} style={{ marginBottom: '-2px' }} /> from completed call history
-          </div>
-        </div>
+        <button className="btn btn-secondary btn-sm" onClick={load}>
+          <RefreshCw size={13} /> Refresh
+        </button>
       </div>
 
-      {/* ── Charts ─────────────────────────────────────────── */}
-      <div className="charts-grid">
-        <div className="chart-card">
-          <h3 className="chart-title">Lead & Call Activity</h3>
-          <p className="chart-subtitle">Daily performance over the last 14 days</p>
-          <div style={{ width: '100%', height: 300 }}>
+      <div className="kpi-row-grid">
+        <KPI label="Total Leads" value={stats?.total_leads ?? 0} subtitle="All time" icon={<Users size={16} />} color="#2563eb" bgColor="rgba(37,99,235,0.08)" />
+        <KPI label="Visitors" value={activeVisitors} subtitle="Active sessions" icon={<Eye size={16} />} color="#7c3aed" bgColor="rgba(124,58,237,0.08)" />
+        <KPI label="AI Qualified" value={stats?.leads_by_status?.qualified ?? 0} subtitle="Qualified leads" icon={<Sparkles size={16} />} color="#10b981" bgColor="rgba(16,185,129,0.08)" />
+        <KPI label="Conversions" value={convertedCount} subtitle="Converted leads" icon={<Trophy size={16} />} color="#f97316" bgColor="rgba(249,115,22,0.08)" />
+        <KPI label="Revenue" value={overview?.total_revenue || 'INR 0'} subtitle="Projected" icon={<DollarSign size={16} />} color="#ec4899" bgColor="rgba(236,72,153,0.08)" />
+        <KPI label="Customers" value={customerStats?.active_contracts ?? customerRows.length} subtitle="Active contracts" icon={<Users size={16} />} color="#06b6d4" bgColor="rgba(6,182,212,0.08)" />
+      </div>
+
+      <div className="dashboard-row-3col">
+        <div className="card">
+          <h2 className="chart-title" style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Lead & Call Activity</h2>
+          <div style={{ width: '100%', height: 180 }}>
             <ResponsiveContainer>
-              <AreaChart data={dailyData}>
+              <AreaChart data={activity} margin={{ top: 4, right: 4, left: -22, bottom: 0 }}>
                 <defs>
-                  <linearGradient id="colorLeads" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#6366f1" stopOpacity={0.3}/>
-                    <stop offset="95%" stopColor="#6366f1" stopOpacity={0}/>
+                  <linearGradient id="dashLeads" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#2563eb" stopOpacity={0.12} />
+                    <stop offset="95%" stopColor="#2563eb" stopOpacity={0} />
+                  </linearGradient>
+                  <linearGradient id="dashCalls" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#0ea5e9" stopOpacity={0.12} />
+                    <stop offset="95%" stopColor="#0ea5e9" stopOpacity={0} />
                   </linearGradient>
                 </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="var(--border-subtle)" vertical={false} />
-                <XAxis 
-                  dataKey="date" 
-                  stroke="var(--text-muted)" 
-                  fontSize={12} 
-                  tickFormatter={(val) => new Date(val).toLocaleDateString('en-US', { day: 'numeric', month: 'short' })}
-                />
-                <YAxis stroke="var(--text-muted)" fontSize={12} />
-                <Tooltip 
-                  contentStyle={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', borderRadius: '8px' }}
-                  itemStyle={{ fontSize: '12px' }}
-                />
-                <Area type="monotone" dataKey="leads" stroke="#6366f1" strokeWidth={2} fillOpacity={1} fill="url(#colorLeads)" />
-                <Area type="monotone" dataKey="calls" stroke="#06b6d4" strokeWidth={2} fillOpacity={0} />
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+                <XAxis dataKey="label" fontSize={10} />
+                <YAxis fontSize={10} allowDecimals={false} />
+                <Tooltip />
+                <Area type="monotone" dataKey="leads" stroke="#2563eb" fillOpacity={1} fill="url(#dashLeads)" strokeWidth={1.5} />
+                <Area type="monotone" dataKey="calls" stroke="#0ea5e9" fillOpacity={1} fill="url(#dashCalls)" strokeWidth={1.5} />
               </AreaChart>
             </ResponsiveContainer>
           </div>
         </div>
 
-        <div className="chart-card">
-          <h3 className="chart-title">Lead Status Distribution</h3>
-          <p className="chart-subtitle">Live counts by current lead stage</p>
-          <div style={{ width: '100%', height: 300 }}>
+        <div className="card">
+          <h2 className="chart-title" style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Conversion Funnel</h2>
+          <div style={{ width: '100%', height: 180 }}>
             <ResponsiveContainer>
-              <BarChart layout="vertical" data={statusData}>
+              <BarChart data={funnel} layout="vertical" margin={{ top: 0, right: 10, left: 0, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
                 <XAxis type="number" hide />
-                <YAxis dataKey="name" type="category" stroke="var(--text-primary)" fontSize={12} width={100} />
-                <Tooltip 
-                   cursor={{fill: 'rgba(255,255,255,0.05)'}}
-                   contentStyle={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', borderRadius: '8px' }}
-                />
-                <Bar dataKey="val" radius={[0, 4, 4, 0]} barSize={20}>
-                  {statusData.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                  ))}
-                </Bar>
+                <YAxis type="category" dataKey="stage" width={90} fontSize={10} />
+                <Tooltip />
+                <Bar dataKey="count" fill="#7c3aed" radius={[0, 5, 5, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>
         </div>
+
+        <div className="card" style={{ display: 'flex', flexDirection: 'column' }}>
+          <h2 className="chart-title" style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Customer Tickets</h2>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
+            <div className="premium-kpi-card" style={{ padding: 8 }}>
+              <div className="kpi-title">Open</div>
+              <div className="kpi-value" style={{ fontSize: 18 }}>{ticketStats?.active ?? 0}</div>
+            </div>
+            <div className="premium-kpi-card" style={{ padding: 8 }}>
+              <div className="kpi-title">SLA Breached</div>
+              <div className="kpi-value" style={{ fontSize: 18, color: '#ef4444' }}>{ticketStats?.sla_breached ?? 0}</div>
+            </div>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {ticketItems.slice(0, 3).map((t) => (
+              <div key={t.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, borderBottom: '1px solid var(--border)', paddingBottom: 4 }}>
+                <span style={{ color: 'var(--text-2)' }}>{t.subject}</span>
+                <span style={{ fontWeight: 600 }}>{t.status}</span>
+              </div>
+            ))}
+            {ticketItems.length === 0 && <div style={{ fontSize: 12, color: 'var(--text-4)' }}>No ticket activity yet.</div>}
+          </div>
+        </div>
       </div>
 
-      {/* ── Recent Leads ─────────────────────────────────────── */}
-      <div className="card">
-        <div className="flex justify-between items-center mb-6">
-          <h3 className="chart-title">Recent Lead Activity</h3>
-          <button className="btn btn-secondary btn-sm">View All</button>
-        </div>
-        <div className="table-wrapper">
-          <table className="data-table">
+      <div className="dashboard-row-3col">
+        <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid var(--border)' }}>
+            <h2 className="chart-title" style={{ fontSize: 13, fontWeight: 700, marginBottom: 0 }}>Recent Customers</h2>
+            <button className="btn btn-secondary btn-sm" style={{ padding: '2px 8px', fontSize: 10.5 }} onClick={() => navigate('/customers')}>View All</button>
+          </div>
+          <table className="data-table" style={{ fontSize: 12 }}>
             <thead>
-              <tr>
-                <th>Lead</th>
-                <th>Interest</th>
+              <tr style={{ background: '#f8fafc' }}>
+                <th>Customer</th>
+                <th>Phone</th>
                 <th>Status</th>
-                <th>Date</th>
-                <th></th>
               </tr>
             </thead>
             <tbody>
-              {recentLeads.map((lead) => (
-                <tr key={lead.id}>
-                  <td>
-                    <div className="flex items-center gap-3">
-                      <div className="avatar" style={{ width: 32, height: 32, fontSize: 11 }}>{lead.full_name[0]}</div>
-                      <div>
-                        <div style={{ fontWeight: 600 }}>{lead.full_name}</div>
-                        <div className="text-xs text-muted">{lead.phone || '--'}</div>
-                      </div>
-                    </div>
-                  </td>
-                  <td><span className="text-sm">{lead.interest || '--'}</span></td>
-                  <td>
-                    <span className={`badge badge-${lead.status}`}>
-                      <span className="badge-dot" style={{ background: 'currentColor' }} />
-                      {lead.status.replace('_', ' ')}
-                    </span>
-                  </td>
-                  <td><span className="text-xs text-muted">{formatRelativeTime(lead.created_at)}</span></td>
-                  <td style={{ textAlign: 'right' }}>
-                    <button className="btn btn-icon" style={{ color: 'var(--text-muted)' }}>
-                      <ArrowUpRight size={16} />
-                    </button>
-                  </td>
+              {customerRows.slice(0, 5).map((c) => (
+                <tr key={c.id}>
+                  <td>{c.full_name}</td>
+                  <td>{c.phone || '--'}</td>
+                  <td><span className="badge badge-converted">Converted</span></td>
                 </tr>
               ))}
-              {recentLeads.length === 0 && (
-                <tr>
-                  <td colSpan="5" style={{ textAlign: 'center', padding: 24, color: 'var(--text-muted)' }}>
-                    No lead activity yet.
-                  </td>
-                </tr>
+              {customerRows.length === 0 && (
+                <tr><td colSpan="3" style={{ textAlign: 'center', padding: 14, color: 'var(--text-4)' }}>No converted customers yet.</td></tr>
               )}
             </tbody>
           </table>
         </div>
+
+        <div className="card" style={{ display: 'flex', flexDirection: 'column' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+            <Brain size={16} style={{ color: '#2563eb' }} />
+            <h2 className="chart-title" style={{ fontSize: 13, fontWeight: 700, margin: 0 }}>AI Training Module</h2>
+          </div>
+          <p style={{ fontSize: 11, color: 'var(--text-4)', margin: '0 0 8px' }}>Knowledge base documents and model readiness.</p>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
+            <div className="premium-kpi-card" style={{ padding: 8 }}>
+              <div className="kpi-title">Documents</div>
+              <div className="kpi-value" style={{ fontSize: 18 }}>{trainingDocs.length}</div>
+            </div>
+            <div className="premium-kpi-card" style={{ padding: 8 }}>
+              <div className="kpi-title">Trained</div>
+              <div className="kpi-value" style={{ fontSize: 18 }}>{trainingDocs.filter((d) => d.status === 'trained').length}</div>
+            </div>
+          </div>
+          <button className="btn btn-secondary btn-sm" onClick={() => navigate('/ai-training')}>
+            Open AI Training <ArrowRight size={11} />
+          </button>
+        </div>
+
+        <div className="card" style={{ display: 'flex', flexDirection: 'column' }}>
+          <h2 className="chart-title" style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Recent Activities</h2>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {recentLeads.slice(0, 4).map((lead) => (
+              <div key={lead.id} style={{ borderBottom: '1px solid var(--border)', paddingBottom: 6 }}>
+                <div style={{ fontSize: 12, fontWeight: 600 }}>{lead.full_name}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-4)' }}>{lead.status} • {new Date(lead.created_at).toLocaleDateString()}</div>
+              </div>
+            ))}
+            {recentLeads.length === 0 && <div style={{ fontSize: 12, color: 'var(--text-4)' }}>No recent activities available.</div>}
+          </div>
+          <div style={{ marginTop: 'auto', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, paddingTop: 8 }}>
+            <div className="premium-kpi-card" style={{ padding: 8 }}>
+              <div className="kpi-title">Follow-Ups Due</div>
+              <div className="kpi-value" style={{ fontSize: 16 }}>{stats?.pending_follow_ups ?? 0}</div>
+            </div>
+            <div className="premium-kpi-card" style={{ padding: 8 }}>
+              <div className="kpi-title">Notifications</div>
+              <div className="kpi-value" style={{ fontSize: 16 }}>{stats?.notifications_today ?? 0}</div>
+            </div>
+          </div>
+        </div>
       </div>
 
-      <div className="card">
-        <div className="flex justify-between items-center mb-6">
-          <h3 className="chart-title">Recent Dispatches</h3>
-          <button className="btn btn-secondary btn-sm">View All</button>
-        </div>
-        <div className="table-wrapper">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Channel</th>
-                <th>To</th>
-                <th>Status</th>
-                <th>Time</th>
-              </tr>
-            </thead>
-            <tbody>
-              {recentDispatches.map((notif) => (
-                <tr key={notif.id}>
-                  <td>
-                    <span className="text-xs flex items-center gap-2">
-                      {notif.channel === 'email' ? <Mail size={12} /> : <MessageSquare size={12} />}
-                      {(notif.channel || 'unknown').toUpperCase()}
-                    </span>
-                  </td>
-                  <td><span className="text-xs">{notif.recipient_phone || notif.recipient_email || '--'}</span></td>
-                  <td>
-                    <span className={`badge ${notif.status === 'failed' ? 'badge-lost' : 'badge-converted'}`}>
-                      {notif.status}
-                    </span>
-                  </td>
-                  <td><span className="text-xs text-muted">{formatRelativeTime(notif.created_at)}</span></td>
-                </tr>
-              ))}
-              {recentDispatches.length === 0 && (
-                <tr>
-                  <td colSpan="4" style={{ textAlign: 'center', padding: 24, color: 'var(--text-muted)' }}>
-                    No recent dispatches.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+      <div className="status-blocks-row">
+        <div className="status-block-card"><Ticket size={12} /><span>Open Tickets</span><strong>{ticketStats?.active ?? 0}</strong></div>
+        <div className="status-block-card"><Clock size={12} /><span>Avg Call Duration</span><strong>{stats?.avg_call_duration_seconds ?? 0}s</strong></div>
+        <div className="status-block-card"><Calendar size={12} /><span>Calls Today</span><strong>{stats?.total_calls_today ?? 0}</strong></div>
+        <div className="status-block-card"><Users size={12} /><span>New Leads Today</span><strong>{stats?.new_leads_today ?? 0}</strong></div>
       </div>
     </div>
   );

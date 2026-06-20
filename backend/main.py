@@ -11,7 +11,7 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from app.core.config import settings
 from app.core.database import engine, Base, ensure_database_exists, seed_default_data
 from app.core.redis_client import get_redis_client, close_redis_client
-from app.api.v1 import auth, leads, notes, follow_ups, users, admin, calls, students, jobs, ai_workflows, notifications, integrations, scheduling, payments
+from app.api.v1 import auth, leads, notes, follow_ups, users, admin, calls, students, jobs, ai_workflows, notifications, integrations, scheduling, payments, analytics, customers, tickets, visitors, ai_training, copilot
 from app.api.v1.calls import set_ngrok_url
 from app.core.logger import logger
 
@@ -155,6 +155,12 @@ app.include_router(notifications.router, prefix="/api/notifications", tags=["Not
 app.include_router(integrations.router, prefix="/api/integrations", tags=["Integrations"])
 app.include_router(scheduling.router, prefix="/api/scheduling", tags=["Scheduling"])
 app.include_router(payments.router,  prefix="/api/payments",  tags=["Payments"])
+app.include_router(analytics.router, prefix="/api/analytics", tags=["Analytics"])
+app.include_router(customers.router, prefix="/api/customers", tags=["Customers"])
+app.include_router(tickets.router,   prefix="/api/tickets",   tags=["Tickets"])
+app.include_router(visitors.router,  prefix="/api/visitors",  tags=["Visitors"])
+app.include_router(ai_training.router, prefix="/api/ai-training", tags=["AI Training"])
+app.include_router(copilot.router,      prefix="/api/copilot",      tags=["AI Copilot"])
 
 # Route aliases for compatibility with frontend
 app.include_router(auth.router,        prefix="/auth",        tags=["Auth Alias"])
@@ -169,11 +175,18 @@ app.include_router(notifications.router, prefix="/notifications", tags=["Notific
 app.include_router(integrations.router, prefix="/integrations", tags=["Integrations Alias"])
 app.include_router(scheduling.router, prefix="/scheduling", tags=["Scheduling Alias"])
 
+# ── New module aliases ────────────────────────────────────────
+app.include_router(analytics.router,   prefix="/analytics",    tags=["Analytics Alias"])
+app.include_router(customers.router,   prefix="/customers",    tags=["Customers Alias"])
+app.include_router(tickets.router,     prefix="/tickets",      tags=["Tickets Alias"])
+app.include_router(visitors.router,    prefix="/visitors",     tags=["Visitors Alias"])
+app.include_router(ai_training.router, prefix="/ai-training",  tags=["AI Training Alias"])
+app.include_router(copilot.router,      prefix="/copilot",       tags=["AI Copilot Alias"])
+
 # ── Simple Proxy for other services (Local Development only) ──
 # This replaces the need for NGINX/API Gateway during local testing.
 
 SERVICE_MAP = {
-    "analytics":     "http://localhost:3006",
     "payments":      "http://localhost:3007",
 }
 

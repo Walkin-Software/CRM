@@ -303,3 +303,19 @@ class DashboardStats(BaseModel):
     leads_by_status: Dict[str, int]
     calls_by_direction: Dict[str, int]
     top_intents: List[Dict[str, Any]]
+    # 7-day delta comparisons
+    leads_delta_pct: float = 0.0
+    calls_delta_pct: float = 0.0
+    # Extra KPIs
+    pending_follow_ups: int = 0
+    notifications_today: int = 0
+
+
+class DashboardActivityPoint(BaseModel):
+    date: str          # ISO date string YYYY-MM-DD
+    leads: int
+    calls: int
+
+
+class DashboardActivity(BaseModel):
+    items: List[DashboardActivityPoint]

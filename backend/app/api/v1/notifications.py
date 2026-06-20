@@ -303,6 +303,45 @@ async def notification_history(
     }
 
 
+@router.get("/unread-count")
+async def get_unread_count(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    query = select(func.count()).select_from(Notification).where(Notification.status != "read")
+    count = (await db.execute(query)).scalar_one()
+    return {"unread_count": count}
+
+
+@router.post("/read-all")
+async def mark_all_as_read(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    query = select(Notification).where(Notification.status != "read")
+    rows = (await db.execute(query)).scalars().all()
+    for row in rows:
+        row.status = "read"
+    await db.commit()
+    return {"status": "ok", "updated_count": len(rows)}
+
+
+@router.patch("/{notification_id}/read")
+async def mark_as_read(
+    notification_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    notif = (
+        await db.execute(select(Notification).where(Notification.id == notification_id))
+    ).scalar_one_or_none()
+    if not notif:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    notif.status = "read"
+    await db.commit()
+    return {"status": "ok"}
+
+
 @router.post("/webhooks/twilio/status")
 async def twilio_message_status_webhook(
     MessageSid: str = Form(...),
