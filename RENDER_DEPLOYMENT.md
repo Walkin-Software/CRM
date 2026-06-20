@@ -9,7 +9,7 @@ This guide outlines the step-by-step instructions to deploy both the **Frontend 
 The system consists of the following components:
 1. **Frontend (Vite / React)**: Deployed as a **Render Static Site** (Free, automated CD, SSL enabled out of the box).
 2. **Backend API (FastAPI / Uvicorn)**: Deployed as a **Render Web Service**.
-3. **Database (MySQL)**: Since the codebase uses `mysql+aiomysql://` database drivers, a MySQL instance is required. We recommend spinning up a free MySQL instance on a cloud provider like **Aiven.io**, **TiDB Cloud**, or **PlanetScale**, or running a MySQL Docker Container as a Render Private Service.
+3. **Database (PostgreSQL / CockroachDB)**: The system supports both PostgreSQL and CockroachDB. We use CockroachDB Serverless (on AWS) for testing and production databases. SQLAlchemy automatically maps the URL to `postgresql+asyncpg://` to connect asynchronously.
 4. **Redis**: Used as the message broker for Celery tasks. Deployed as a **Render Redis** instance (Free tier available).
 5. **Celery Worker**: Deployed as a **Render Background Worker** (uses the same GitHub repository and backend environment, running the Celery command).
 
@@ -22,28 +22,19 @@ The system consists of the following components:
 3. Configure the settings:
    - **Name**: `crm-redis`
    - **Environment**: Select `Free` (or appropriate tier).
-   - **Region**: Choose a region close to your target users (e.g., `Singapore` or `Oregon`).
+   - **Region**: Choose a region close to your database/server (e.g., `Singapore` or `Oregon`).
 4. Click **Create Redis**.
 5. Once created, copy the **Internal Redis URL** (e.g., `redis://red-xxxxxxxxxx:6379`). You will need this for the backend and worker configuration.
 
 ---
 
-## 3. Step 2: Set Up MySQL Database
+## 3. Step 2: Set Up CockroachDB / PostgreSQL Database
 
-Since Render doesn't offer direct managed MySQL (only PostgreSQL), you have two easy options:
-
-### Option A: External Cloud Provider (Recommended & Free)
-Use a cloud database provider like **Aiven.io** or **TiDB Cloud**:
-1. Create a free account at [Aiven.io](https://aiven.io/) or [TiDB Cloud](https://pingcap.com/products/tidb-cloud).
-2. Create a **MySQL** database instance.
-3. Copy the connection string. Make sure it uses `mysql+aiomysql://` for FastAPI's async engine (e.g., `mysql+aiomysql://user:password@host:port/dbname`).
-
-### Option B: Dockerized MySQL as a Render Private Service
-1. Create a private service on Render using the official `mysql:8.0` image.
-2. Expose port `3306`.
-3. Add environment variables:
-   - `MYSQL_ROOT_PASSWORD` = `your_secure_root_password`
-   - `MYSQL_DATABASE` = `ai_phone_agent`
+We use CockroachDB Serverless (AWS ap-south-1) for zero-maintenance scaling:
+1. In production, configure the database URL exactly as:
+   `postgresql://radhe:2Lfn5MGKjoCnh-tIpdXcCQ@crm-ai-28004.j77.aws-ap-south-1.cockroachlabs.cloud:26257/defaultdb?sslmode=verify-full`
+2. The backend code will automatically map this to the async PG driver (`postgresql+asyncpg://`).
+3. You do not need to run manual SQL schema scripts; the FastAPI server automatically creates all required tables and seeds default roles and admin users on startup!
 
 ---
 
@@ -54,15 +45,15 @@ Use a cloud database provider like **Aiven.io** or **TiDB Cloud**:
 3. Configure the service settings:
    - **Name**: `crm-backend`
    - **Language**: `Python`
-   - **Region**: Same region as Redis/MySQL.
+   - **Region**: Same region as Redis/CockroachDB.
    - **Root Directory**: `backend`
    - **Build Command**: `pip install -r requirements.txt`
    - **Start Command**: `python -m uvicorn main:app --host 0.0.0.0 --port $PORT`
-4. Expand the **Environment Variables** section and add the required environment variables:
+5. Expand the **Environment Variables** section and add the required environment variables:
 
 | Variable Name | Example/Description |
 | :--- | :--- |
-| `DATABASE_URL` | `mysql+aiomysql://<user>:<pass>@<host>:<port>/<dbname>` |
+| `DATABASE_URL` | `postgresql://<user>:<pass>@<host>:<port>/<dbname>` |
 | `REDIS_URL` | The **Internal Redis URL** copied from Step 1 |
 | `JWT_SECRET` | A secure random string for signing JWT tokens |
 | `TWILIO_ACCOUNT_SID` | Your Twilio Account SID |

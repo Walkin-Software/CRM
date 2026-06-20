@@ -52,68 +52,68 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         # Backfill columns in existing databases after model expansion.
+        def get_columns(sync_conn, table_name):
+            from sqlalchemy import inspect
+            try:
+                inspector = inspect(sync_conn)
+                return {col["name"] for col in inspector.get_columns(table_name)}
+            except Exception as e:
+                logger.warning(f"Error inspecting columns for {table_name}: {e}")
+                return set()
+
         try:
-            lead_columns = {
-                row[0]
-                for row in (
-                    await conn.execute(text("SHOW COLUMNS FROM leads"))
-                ).fetchall()
-            }
-            if "lead_type" not in lead_columns:
-                await conn.execute(text("ALTER TABLE leads ADD COLUMN lead_type VARCHAR(20) NOT NULL DEFAULT 'form'"))
-            if "job_role" not in lead_columns:
-                await conn.execute(text("ALTER TABLE leads ADD COLUMN job_role VARCHAR(255) NULL"))
-            if "years_experience" not in lead_columns:
-                await conn.execute(text("ALTER TABLE leads ADD COLUMN years_experience FLOAT NULL"))
-            if "description" not in lead_columns:
-                await conn.execute(text("ALTER TABLE leads ADD COLUMN description TEXT NULL"))
-            if "lead_score" not in lead_columns:
-                await conn.execute(text("ALTER TABLE leads ADD COLUMN lead_score INT NOT NULL DEFAULT 0"))
-            if "lead_temperature" not in lead_columns:
-                await conn.execute(text("ALTER TABLE leads ADD COLUMN lead_temperature ENUM('hot','warm','cold') NOT NULL DEFAULT 'warm'"))
-            if "campaign_id" not in lead_columns:
-                await conn.execute(text("ALTER TABLE leads ADD COLUMN campaign_id VARCHAR(100) NULL"))
-            if "utm_source" not in lead_columns:
-                await conn.execute(text("ALTER TABLE leads ADD COLUMN utm_source VARCHAR(120) NULL"))
-            if "utm_medium" not in lead_columns:
-                await conn.execute(text("ALTER TABLE leads ADD COLUMN utm_medium VARCHAR(120) NULL"))
-            if "utm_campaign" not in lead_columns:
-                await conn.execute(text("ALTER TABLE leads ADD COLUMN utm_campaign VARCHAR(120) NULL"))
-            if "keyword" not in lead_columns:
-                await conn.execute(text("ALTER TABLE leads ADD COLUMN keyword VARCHAR(255) NULL"))
-            if "conversion_source" not in lead_columns:
-                await conn.execute(text("ALTER TABLE leads ADD COLUMN conversion_source VARCHAR(120) NULL"))
+            lead_columns = await conn.run_sync(get_columns, "leads")
+            if lead_columns:
+                if "lead_type" not in lead_columns:
+                    await conn.execute(text("ALTER TABLE leads ADD COLUMN lead_type VARCHAR(20) NOT NULL DEFAULT 'form'"))
+                if "job_role" not in lead_columns:
+                    await conn.execute(text("ALTER TABLE leads ADD COLUMN job_role VARCHAR(255) NULL"))
+                if "years_experience" not in lead_columns:
+                    await conn.execute(text("ALTER TABLE leads ADD COLUMN years_experience FLOAT NULL"))
+                if "description" not in lead_columns:
+                    await conn.execute(text("ALTER TABLE leads ADD COLUMN description TEXT NULL"))
+                if "lead_score" not in lead_columns:
+                    await conn.execute(text("ALTER TABLE leads ADD COLUMN lead_score INT NOT NULL DEFAULT 0"))
+                if "lead_temperature" not in lead_columns:
+                    if conn.dialect.name == "mysql":
+                        await conn.execute(text("ALTER TABLE leads ADD COLUMN lead_temperature ENUM('hot','warm','cold') NOT NULL DEFAULT 'warm'"))
+                    else:
+                        await conn.execute(text("ALTER TABLE leads ADD COLUMN lead_temperature VARCHAR(10) NOT NULL DEFAULT 'warm'"))
+                if "campaign_id" not in lead_columns:
+                    await conn.execute(text("ALTER TABLE leads ADD COLUMN campaign_id VARCHAR(100) NULL"))
+                if "utm_source" not in lead_columns:
+                    await conn.execute(text("ALTER TABLE leads ADD COLUMN utm_source VARCHAR(120) NULL"))
+                if "utm_medium" not in lead_columns:
+                    await conn.execute(text("ALTER TABLE leads ADD COLUMN utm_medium VARCHAR(120) NULL"))
+                if "utm_campaign" not in lead_columns:
+                    await conn.execute(text("ALTER TABLE leads ADD COLUMN utm_campaign VARCHAR(120) NULL"))
+                if "keyword" not in lead_columns:
+                    await conn.execute(text("ALTER TABLE leads ADD COLUMN keyword VARCHAR(255) NULL"))
+                if "conversion_source" not in lead_columns:
+                    await conn.execute(text("ALTER TABLE leads ADD COLUMN conversion_source VARCHAR(120) NULL"))
         except Exception as e:
             logger.warning(f"Lead schema backfill skipped or failed: {e}")
 
         try:
-            call_columns = {
-                row[0]
-                for row in (
-                    await conn.execute(text("SHOW COLUMNS FROM calls"))
-                ).fetchall()
-            }
-            if "status" in call_columns:
-                await conn.execute(
-                    text(
-                        "ALTER TABLE calls MODIFY COLUMN status "
-                        "ENUM('initiated','ringing','in_progress','answered','hangup','no_response','completed','failed','no_answer','busy','transferred') "
-                        "NOT NULL DEFAULT 'initiated'"
+            call_columns = await conn.run_sync(get_columns, "calls")
+            if call_columns and "status" in call_columns:
+                if conn.dialect.name == "mysql":
+                    await conn.execute(
+                        text(
+                            "ALTER TABLE calls MODIFY COLUMN status "
+                            "ENUM('initiated','ringing','in_progress','answered','hangup','no_response','completed','failed','no_answer','busy','transferred') "
+                            "NOT NULL DEFAULT 'initiated'"
+                        )
                     )
-                )
         except Exception as e:
             logger.warning(f"Calls status enum backfill skipped or failed: {e}")
 
         try:
-            audit_columns = {
-                row[0]
-                for row in (
-                    await conn.execute(text("SHOW COLUMNS FROM audit_logs"))
-                ).fetchall()
-            }
-            if "id" in audit_columns:
-                # Ensure primary key autoincrement in MySQL deployments.
-                await conn.execute(text("ALTER TABLE audit_logs MODIFY COLUMN id BIGINT NOT NULL AUTO_INCREMENT"))
+            audit_columns = await conn.run_sync(get_columns, "audit_logs")
+            if audit_columns and "id" in audit_columns:
+                if conn.dialect.name == "mysql":
+                    # Ensure primary key autoincrement in MySQL deployments.
+                    await conn.execute(text("ALTER TABLE audit_logs MODIFY COLUMN id BIGINT NOT NULL AUTO_INCREMENT"))
         except Exception as e:
             logger.warning(f"Audit schema backfill skipped or failed: {e}")
     # Seed default admin user + roles if the database is brand new

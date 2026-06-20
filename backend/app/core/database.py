@@ -31,10 +31,13 @@ async def ensure_database_exists():
         conn.close()
 
 
+db_url = settings.DATABASE_URL
+if db_url.startswith("postgresql://"):
+    db_url = db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+
 engine = create_async_engine(
-    settings.DATABASE_URL,
+    db_url,
     pool_recycle=3600,
-    # pool_pre_ping removed — incompatible with this aiomysql version
 )
 
 SessionLocal = async_sessionmaker(

@@ -9,6 +9,7 @@ greenlet
 sqlalchemy
 aiomysql
 aiosqlite
+asyncpg
 pymysql
 alembic
 redis
